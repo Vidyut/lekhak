@@ -7,8 +7,10 @@ use ``${Name}`` and ``${Metadata.Key}`` syntax.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -71,6 +73,63 @@ BUILTIN_DOCUMENT_TEMPLATES: dict[str, dict[bool, str]] = {
 }
 
 DOCUMENT_TEMPLATE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _-]*")
+
+# Every value key the compile actually supplies (2.4 slot editor): mirrors
+# Project._template_values plus the compile extras and the TOC's Entries.
+# Metadata.<key> is open-ended and validated by prefix only. fill() is
+# case-sensitive, so validation is too — ${title} renders empty and should
+# be flagged, not silently accepted.
+TEMPLATE_KEYS = (
+    "Title", "Kind", "Synopsis", "WordCount", "Content",
+    "ChapterNumber", "SceneNumber", "WordsTotal", "Entries", "Children",
+)
+
+# What the slot editor's completer offers, as the exact strings an
+# activated item inserts (closing brace included; Metadata. stays open
+# for the writer's own key).
+TEMPLATE_COMPLETIONS = tuple(f"${{{key}}}" for key in TEMPLATE_KEYS) + (
+    "${Metadata.", "$if(", "$else", "$endif",
+)
+
+
+def validate_slot(text: str, *, html: bool = True) -> list[str]:
+    """Tier-1 checks for a hand-edited slot (2.4): unknown ${...} keys,
+    unbalanced $if/$endif, an orphan $else, stray conditional markers.
+
+    Advisory only — TemplateSet.fill already degrades a bad slot to
+    something printable, so saving an issue stays allowed; this is the
+    editor's tripwire, not a gate. The ``html`` argument is accepted for
+    signature symmetry with the dialog's tier-2 Qt round-trip sniff,
+    which lives in the GUI layer so this module stays Qt-free.
+    """
+    issues: list[str] = []
+    for key in PLACEHOLDER_RE.findall(text):
+        name = key.strip()
+        if name.startswith("Metadata."):
+            continue
+        if name not in TEMPLATE_KEYS:
+            issues.append(f"unknown placeholder ${{{name}}}")
+    depth = 0
+    for piece in CONDITIONAL_PIECE_RE.split(text):
+        if piece.startswith("$if("):
+            depth += 1
+        elif piece == "$endif":
+            depth -= 1
+            if depth < 0:
+                issues.append("$endif without a matching $if")
+                depth = 0
+        elif piece == "$else" and depth == 0:
+            issues.append("$else without a matching $if")
+    if depth > 0:
+        issues.append(f"{depth} unclosed $if")
+    leftover = CONDITIONAL_PIECE_RE.sub("", text)
+    stray = sorted({marker for marker in ("$if", "$else", "$endif")
+                    if marker in leftover})
+    if stray:
+        issues.append(
+            "stray or malformed marker(s): " + ", ".join(stray)
+            + " (missing parentheses?)")
+    return issues
 
 
 @dataclass(frozen=True)
@@ -248,3 +307,32 @@ def copy_template_set(source: TemplateSet, name: str, project_root: Path) -> Tem
                 shutil.copy2(path, created.directory / path.name)
         return TemplateSet.load(name, created.directory)
     return created
+
+
+def slot_file_path(directory: Path, name: str, *, document: bool,
+                   html: bool) -> Path:
+    """Where one slot of a set lives on disk (2.4): ``<set>/<slot>.html``
+    or ``<set>/documents/<name>.html`` for document-level templates."""
+    base = Path(directory) / "documents" if document else Path(directory)
+    return base / (name + EXTENSIONS[html])
+
+
+def write_slot(directory: Path, name: str, *, document: bool, html: bool,
+               text: str) -> Path:
+    """Atomic slot write (2.4): temp file + os.replace, the same contract
+    document content uses — a crash mid-save never leaves a half-written
+    template."""
+    path = slot_file_path(directory, name, document=document, html=html)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
+    except BaseException:
+        Path(temporary_name).unlink(missing_ok=True)
+        raise
+    return path

@@ -40,16 +40,18 @@ from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import (
-    QDate, QEvent, QItemSelectionModel, QSize, QSettings, Qt, QTimer, QUrl,
+    QDate, QEvent, QItemSelectionModel, QSettings, QSize, Qt, QTimer, QUrl,
     Signal,
 )
 from PySide6.QtGui import (
-    QAction, QDesktopServices, QFont, QKeySequence, QTextBlockFormat,
+    QAction, QDesktopServices, QFont, QKeySequence,
+    QTextBlockFormat,
     QTextCharFormat, QTextCursor, QTextDocument, QTextDocumentFragment,
     QTextFormat, QTextListFormat,
 )
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter,
+    QDateEdit, QDialog,
     QDialogButtonBox,
     QFileDialog, QFontComboBox, QFormLayout, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel,
@@ -65,8 +67,10 @@ from . import revisions
 from .importer import dump_books, import_all_books, parse_dump
 from .project import DEFAULT_LINK_POLICY, EXPORT_KINDS, Project
 from .templates import (
+    DOCUMENT_TEMPLATE_NAME_RE, EXTENSIONS, PLACEHOLDER_RE, SLOTS,
+    TEMPLATE_COMPLETIONS,
     TemplateSet, copy_template_set, discover_template_sets,
-    project_template_root,
+    project_template_root, slot_file_path, validate_slot, write_slot,
 )
 
 
@@ -692,6 +696,244 @@ class ColumnPickerDialog(QDialog):
             if column_id != "title" and item.checkState() == Qt.Checked:
                 chosen.append(column_id)
         return chosen
+
+
+def _roundtrip_issues(text: str) -> list[str]:
+    """Tier-2 sanity for html slots (2.4): feed the candidate to a
+    scratch QTextDocument and make sure every ${...} placeholder
+    survived as visible text. The failure this catches is an unclosed
+    tag that swallows the rest of the file — fill() would then print the
+    swallowed part as nothing."""
+    document = QTextDocument()
+    document.setHtml(text)
+    visible = document.toPlainText()
+    issues = []
+    for match in PLACEHOLDER_RE.finditer(text):
+        if match.group(0) not in visible:
+            issues.append(
+                f"placeholder {match.group(0)} vanished in the HTML "
+                "round-trip — check for an unclosed tag above it")
+    return issues
+
+
+class TemplateSlotEditorDialog(QDialog):
+    """Edit one template set's slot files in the app (2.4).
+
+    A slot is a fill string, not a document, so this is a plain-text
+    editor — not the WYSIWYG writing pane — with a completer over the
+    real ${...}/$if vocabulary and live tier-1 validation (unknown keys,
+    unbalanced conditionals) plus an html round-trip sniff. Saves are
+    atomic and always allowed on an editable set: validation is advisory
+    because TemplateSet.fill already degrades a bad slot to something
+    printable. The built-in default set is view-only; New set forks it
+    into the project, same as the export dialog's button.
+    """
+
+    def __init__(self, project: Project, parent=None) -> None:
+        super().__init__(parent)
+        self.project = project
+        self.template_sets = discover_template_sets(project.root)
+        self._entries: list[tuple[str, str, bool, bool]] = []
+        self.setWindowTitle("Edit Template Set")
+        self.resize(760, 560)
+        layout = QVBoxLayout(self)
+
+        set_row = QHBoxLayout()
+        self.set_box = QComboBox()
+        for template_set in self.template_sets:
+            self.set_box.addItem(template_set.name)
+        self.set_box.currentIndexChanged.connect(self._set_changed)
+        set_row.addWidget(QLabel("Set:"))
+        set_row.addWidget(self.set_box, 1)
+        new_set = QPushButton("New set…")
+        new_set.clicked.connect(self._new_set)
+        set_row.addWidget(new_set)
+        open_folder = QPushButton("Open folder")
+        open_folder.clicked.connect(self._open_folder)
+        set_row.addWidget(open_folder)
+        layout.addLayout(set_row)
+
+        slot_row = QHBoxLayout()
+        self.slot_box = QComboBox()
+        self.slot_box.currentIndexChanged.connect(self._slot_changed)
+        slot_row.addWidget(QLabel("Slot:"))
+        slot_row.addWidget(self.slot_box, 1)
+        layout.addLayout(slot_row)
+
+        self.editor = QPlainTextEdit()
+        self.editor.textChanged.connect(self._update_completer)
+        self.editor.textChanged.connect(self._validate)
+        layout.addWidget(self.editor, 1)
+
+        self.validation = QLabel()
+        self.validation.setWordWrap(True)
+        layout.addWidget(self.validation)
+
+        buttons = QDialogButtonBox()
+        self.revert_button = buttons.addButton(
+            "Revert", QDialogButtonBox.ActionRole)
+        self.save_button = buttons.addButton(
+            "Save", QDialogButtonBox.ActionRole)
+        close_button = buttons.addButton(QDialogButtonBox.Close)
+        self.revert_button.clicked.connect(self._slot_changed)
+        self.save_button.clicked.connect(self._save)
+        close_button.clicked.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.completer = QCompleter(TEMPLATE_COMPLETIONS, self.editor)
+        self.completer.setWidget(self.editor)
+        self.completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.completer.activated.connect(self._insert_completion)
+        self._completion_prefix = ""
+
+        self._set_changed()
+
+    # --- population ---------------------------------------------------------
+
+    def current_set(self) -> TemplateSet:
+        return self.template_sets[self.set_box.currentIndex()]
+
+    def _set_changed(self, *args) -> None:
+        self.slot_box.blockSignals(True)
+        self.slot_box.clear()
+        self._entries = []
+        for slot in SLOTS:
+            for html in (True, False):
+                label = slot + EXTENSIONS[html]
+                self._entries.append((label, slot, html, False))
+                self.slot_box.addItem(label)
+        for name in self.current_set().document_template_names():
+            for html in (True, False):
+                label = "documents/" + name + EXTENSIONS[html]
+                self._entries.append((label, name, html, True))
+                self.slot_box.addItem(label)
+        self.slot_box.blockSignals(False)
+        self._slot_changed()
+
+    def _slot_changed(self, *args) -> None:
+        if not self._entries:
+            return
+        _label, name, html, is_document = self._entries[
+            self.slot_box.currentIndex()]
+        template_set = self.current_set()
+        if template_set.directory:
+            # Re-read from disk: the file may have changed under us, and
+            # Revert means exactly "throw away edits, show the stored
+            # copy" — the construction-time snapshot would lie.
+            template_set = TemplateSet.load(template_set.name,
+                                            template_set.directory)
+            self.template_sets[self.set_box.currentIndex()] = template_set
+        if is_document:
+            text = template_set.document_slot(name, html=html) or ""
+        else:
+            text = template_set.slot(name, html=html)
+        self.editor.blockSignals(True)
+        self.editor.setPlainText(text)
+        self.editor.blockSignals(False)
+        self._update_editable()
+        self._validate()
+
+    def _update_editable(self) -> None:
+        editable = self.current_set().editable
+        self.save_button.setEnabled(editable)
+        self.revert_button.setEnabled(editable)
+        if not editable:
+            self.validation.setText(
+                "Built-in default set — not editable. Use New set… to "
+                "fork it into the project first.")
+
+    # --- editing ------------------------------------------------------------
+
+    def _update_completer(self) -> None:
+        """Popup the completer when the caret sits right after a partial
+        ``${`` or ``$`` token; the activated item replaces exactly that
+        prefix, so the completion inserts a whole token, brace and all."""
+        before = self.editor.toPlainText()[:self.editor.textCursor().position()]
+        match = re.search(r"(\$\{|\$)([A-Za-z0-9._]*)$", before)
+        if not match:
+            self._completion_prefix = ""
+            self.completer.popup().hide()
+            return
+        self._completion_prefix = match.group(0)
+        self.completer.setCompletionPrefix(self._completion_prefix)
+        popup = self.completer.popup()
+        if self.completer.completionCount() == 0:
+            popup.hide()
+            return
+        popup.setCurrentIndex(self.completer.completionModel().index(0, 0))
+        rectangle = self.editor.cursorRect()
+        rectangle.setWidth(popup.sizeHintForColumn(0)
+                           + popup.verticalScrollBar().sizeHint().width())
+        popup.show()
+
+    def _insert_completion(self, text: str) -> None:
+        cursor = self.editor.textCursor()
+        for _ in range(len(self._completion_prefix)):
+            cursor.deletePreviousChar()
+        cursor.insertText(text)
+        self.editor.setTextCursor(cursor)
+        self._completion_prefix = ""
+
+    def _validate(self) -> None:
+        if not self.current_set().editable:
+            return  # the fork hint stays put until the set is editable
+        text = self.editor.toPlainText()
+        issues = validate_slot(text)
+        _label, _name, html, _is_document = self._entries[
+            self.slot_box.currentIndex()]
+        if html:
+            issues.extend(_roundtrip_issues(text))
+        if issues:
+            self.validation.setText(
+                f"{len(issues)} issue(s), saving stays allowed: "
+                + " · ".join(issues))
+        else:
+            self.validation.setText("No issues.")
+
+    # --- persistence --------------------------------------------------------
+
+    def _save(self) -> None:
+        template_set = self.current_set()
+        if not template_set.editable:
+            return
+        _label, name, html, is_document = self._entries[
+            self.slot_box.currentIndex()]
+        write_slot(template_set.directory, name, document=is_document,
+                   html=html, text=self.editor.toPlainText())
+        # Refresh the in-memory set so a compile in this session sees it.
+        self.template_sets[self.set_box.currentIndex()] = TemplateSet.load(
+            template_set.name, template_set.directory)
+        self._validate()
+        self.validation.setText("Saved. " + self.validation.text())
+
+    def _new_set(self) -> None:
+        name, accepted = QInputDialog.getText(self, "New template set",
+                                              "Set name:")
+        if not accepted or not name.strip():
+            return
+        try:
+            created = copy_template_set(self.current_set(), name.strip(),
+                                        self.project.root)
+        except (ValueError, FileExistsError) as error:
+            QMessageBox.warning(self, "Cannot create set", str(error))
+            return
+        self.template_sets = discover_template_sets(self.project.root)
+        self.set_box.blockSignals(True)
+        self.set_box.clear()
+        for template_set in self.template_sets:
+            self.set_box.addItem(template_set.name)
+            if template_set.name == created.name:
+                self.set_box.setCurrentIndex(self.set_box.count() - 1)
+        self.set_box.blockSignals(False)
+        self._set_changed()
+
+    def _open_folder(self) -> None:
+        template_set = self.current_set()
+        if not template_set.directory:
+            return
+        template_set.directory.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(
+            str(template_set.directory)))
 
 
 class RevisionPassesDialog(QDialog):
@@ -1696,6 +1938,8 @@ class MainWindow(QMainWindow):
         document_menu.addSeparator()
         self._action(document_menu, "Edit Metadata…", None, self.edit_metadata)
         self._action(document_menu, "Outliner Columns…", None, self.pick_outliner_columns)
+        self._action(document_menu, "Edit Template Set…", None,
+                     self.edit_template_set)
         self._action(document_menu, "Create Snapshot…", None, self.create_snapshot)
         self._action(document_menu, "Restore Snapshot…", None, self.restore_snapshot)
         self._action(document_menu, "Link to Section…", "Ctrl+L", self._link_section)
@@ -2036,6 +2280,15 @@ class MainWindow(QMainWindow):
                 "outliner_columns", json.dumps(dialog.selected_columns())
             )
             self._refresh_outliner()
+
+    def edit_template_set(self) -> None:
+        """Document → Edit Template Set… (2.4): in-app slot editing with
+        the placeholder completer and validation. No project, nothing to
+        edit — template sets hang off a project root."""
+        if not self.project:
+            return
+        dialog = TemplateSlotEditorDialog(self.project, self)
+        dialog.exec()
 
     def _resolve_wiki_links(self) -> None:
         """Turn `[[Title]]` spans into clickable links in the editor.
