@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import re
 import sys
+from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QDate, QSize, QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction, QDesktopServices, QFont, QKeySequence, QTextBlockFormat,
     QTextCharFormat, QTextCursor, QTextDocumentFragment, QTextListFormat,
@@ -189,6 +190,32 @@ class ProjectReplaceDialog(QDialog):
             f"{counts['documents']} document(s).",
         )
         self.refresh_preview()
+
+
+class PreferencesDialog(QDialog):
+    def __init__(self, font_size: int, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Preferences")
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.size_spin = QSpinBox()
+        self.size_spin.setRange(8, 24)
+        self.size_spin.setValue(font_size)
+        self.size_spin.setSuffix(" pt")
+        form.addRow("Interface font size:", self.size_spin)
+        layout.addLayout(form)
+        note = QLabel(
+            "Applies to menus, binder, corkboard, outliner and panels. "
+            "The writing editor keeps its own size and zoom."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
 
 class MetadataDialog(QDialog):
@@ -441,6 +468,23 @@ class ColumnPickerDialog(QDialog):
         return chosen
 
 
+class LinkEditor(QTextEdit):
+    """QTextEdit that reports internal `lekhak://` anchor clicks.
+
+    Plain QTextEdit has no link-click support (that is QTextBrowser's API),
+    so a click on an anchor is turned into a signal here instead.
+    """
+
+    internal_link_clicked = Signal(str)
+
+    def mousePressEvent(self, event) -> None:
+        anchor = self.anchorAt(event.position().toPoint())
+        if anchor.startswith("lekhak://"):
+            self.internal_link_clicked.emit(anchor)
+            return
+        super().mousePressEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -461,11 +505,18 @@ class MainWindow(QMainWindow):
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._tree_context_menu)
 
-        self.editor = QTextEdit()
+        self.editor = LinkEditor()
         self.editor.setAcceptRichText(True)
         self.editor.setPlaceholderText("Start writing…")
         self.editor.textChanged.connect(self._content_changed)
         self.editor.cursorPositionChanged.connect(self._update_word_count)
+        self.editor.internal_link_clicked.connect(self._link_clicked)
+        # Pin the writing font so interface-font preferences never leak into
+        # document content (toHtml() round-trips the body size); 12 pt is
+        # what reset_zoom already assumed.
+        writing_font = self.editor.font()
+        writing_font.setPointSize(12)
+        self.editor.setFont(writing_font)
 
         self.corkboard = QListWidget()
         self.corkboard.setViewMode(QListWidget.IconMode)
@@ -581,6 +632,8 @@ class MainWindow(QMainWindow):
         self._action(edit_menu, "Find in Project", "Ctrl+Shift+F", self.search_box.setFocus)
         self._action(edit_menu, "Replace in Project…", "Ctrl+Shift+H",
                      self.replace_in_project)
+        edit_menu.addSeparator()
+        self._action(edit_menu, "Preferences…", "Ctrl+,", self.preferences)
 
         view_menu = self.menuBar().addMenu("&View")
         self._action(view_menu, "Zoom In", QKeySequence.ZoomIn, lambda: self.editor.zoomIn(1))
@@ -597,6 +650,7 @@ class MainWindow(QMainWindow):
         self._action(document_menu, "Outliner Columns…", None, self.pick_outliner_columns)
         self._action(document_menu, "Create Snapshot…", None, self.create_snapshot)
         self._action(document_menu, "Restore Snapshot…", None, self.restore_snapshot)
+        self._action(document_menu, "Link to Section…", "Ctrl+L", self._link_section)
 
     def _action(self, menu, text, shortcut, callback) -> QAction:
         action = QAction(text, self)
@@ -810,6 +864,106 @@ class MainWindow(QMainWindow):
             )
             self._refresh_outliner()
 
+    def _resolve_wiki_links(self) -> None:
+        """Turn `[[Title]]` spans into clickable links in the editor.
+
+        Runs on load only, so the stored document keeps the plain `[[Title]]`
+        text (links survive a retitle and stay readable in the file).
+        """
+        if not self.project:
+            return
+        document = self.editor.document()
+        link_color = self.palette().link().color().name()
+        cursor = QTextCursor(document)
+        cursor.beginEditBlock()
+        text = self.editor.toPlainText()
+        # Right-to-left so replacements never disturb pending positions.
+        for match in reversed(list(self.project.WIKI_LINK_RE.finditer(text))):
+            target = match.group(1).strip()
+            resolved = self.project.resolve_link(target)
+            # Select the whole token, brackets included; insertHtml then
+            # replaces it outright, so no stray [[ ]] survive.
+            span_cursor = QTextCursor(document)
+            span_cursor.setPosition(match.start())
+            span_cursor.setPosition(match.end(), QTextCursor.KeepAnchor)
+            if len(resolved) == 1:
+                html = (
+                    f'<a href="lekhak://doc/{resolved[0].id}" '
+                    f'style="color:{link_color}; text-decoration:underline">'
+                    f"{escape(target)}</a>"
+                )
+            elif not resolved:
+                html = (
+                    '<a href="lekhak://missing" '
+                    'style="color:#c0392b; text-decoration:underline">'
+                    f"[missing: {escape(target)}]</a>"
+                )
+            else:
+                html = (
+                    f'<a href="lekhak://pick/{escape(target)}" '
+                    f'style="color:{link_color}; text-decoration:underline">'
+                    f"{escape(target)}</a>"
+                )
+            span_cursor.insertHtml(html)
+        cursor.endEditBlock()
+
+    def _link_clicked(self, address: str) -> None:
+        if not self.project or address == "lekhak://missing":
+            return
+        if address.startswith("lekhak://doc/"):
+            self.save_current()
+            self._select_document(address[len("lekhak://doc/"):])
+        elif address.startswith("lekhak://pick/"):
+            self._pick_link_target(address[len("lekhak://pick/"):])
+
+    def _pick_link_target(self, target: str) -> None:
+        matches = self.project.resolve_link(target)
+        labels = [f"{d.title}  ({d.kind})" for d in matches]
+        chosen, accepted = QInputDialog.getItem(
+            self, "Follow link", f"‘{target}’ matches several sections:",
+            labels, 0, False,
+        )
+        if accepted:
+            self.save_current()
+            self._select_document(matches[labels.index(chosen)].id)
+
+    def _link_section(self) -> None:
+        if not self.project:
+            return
+        cursor = self.editor.textCursor()
+        selected = cursor.selectedText().strip()
+        documents = [
+            d for d in self.project.documents() if d.kind != "folder"
+        ]
+        if not documents:
+            return
+        titles = [d.title for d in documents]
+        if selected and selected in titles:
+            start = titles.index(selected)
+        else:
+            start = 0
+        chosen, accepted = QInputDialog.getItem(
+            self, "Insert link", "Link to section:", titles, start, False,
+        )
+        if not accepted:
+            return
+        self.save_current()
+        cursor.insertText(f"[[{chosen}]]")
+        self._content_changed()
+
+    def _broken_links(self) -> list[str]:
+        if not self.project:
+            return []
+        return [
+            target for target, resolved in
+            self.project.wiki_targets(self.current_id) if not resolved
+        ]
+
+    def _content_changed(self) -> None:
+        if not self.loading:
+            self.save_timer.start()
+            self._update_word_count()
+
     def _selection_changed(self, current, previous) -> None:
         if self.loading:
             return
@@ -819,6 +973,7 @@ class MainWindow(QMainWindow):
         if self.project and self.current_id:
             document = next(d for d in self.project.documents() if d.id == self.current_id)
             self.editor.setHtml(self.project.read_content(self.current_id))
+            self._resolve_wiki_links()
             self.synopsis.setPlainText(document.synopsis)
             self.target.setValue(document.word_target)
             if document.kind == "folder" and self.views.currentWidget() is self.editor:
@@ -846,7 +1001,8 @@ class MainWindow(QMainWindow):
             return
         self.save_timer.stop()
         try:
-            self.project.write_content(self.current_id, self.editor.toHtml())
+            html = self.project.canonicalize_links(self.editor.toHtml())
+            self.project.write_content(self.current_id, html)
             self.project.update_document(
                 self.current_id,
                 synopsis=self.synopsis.toPlainText(),
@@ -1092,8 +1248,10 @@ class MainWindow(QMainWindow):
             )
             return
         try:
+            before_html = self.project.canonicalize_links(before.toHtml())
+            after_html = self.project.canonicalize_links(after.toHtml())
             new = self.project.split_document(
-                self.current_id, before.toHtml(), after.toHtml())
+                self.current_id, before_html, after_html)
         except (ValueError, KeyError) as error:
             QMessageBox.warning(self, "Split Section", str(error))
             return
@@ -1228,6 +1386,23 @@ class MainWindow(QMainWindow):
         cursor.setBlockFormat(QTextBlockFormat())
         self.editor.setTextCursor(cursor)
 
+    def preferences(self) -> None:
+        current = QApplication.font().pointSize()
+        dialog = PreferencesDialog(current, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        size = dialog.size_spin.value()
+        font = QApplication.font()
+        font.setPointSize(size)
+        QApplication.setFont(font)
+        # QApplication.setFont alone doesn't reach widgets that already
+        # exist; set it on the window so it cascades. The editor is pinned
+        # with an explicit font, so it ignores the cascade and keeps its
+        # 12 pt writing size.
+        self.setFont(font)
+        QSettings().setValue("ui/fontSize", size)
+        self.statusBar().showMessage(f"Interface font set to {size} pt", 3000)
+
     def replace_in_project(self) -> None:
         if not self.project:
             return
@@ -1275,6 +1450,10 @@ class MainWindow(QMainWindow):
             parts.append(f"{selected:,} selected")
         if self._project_total:
             parts.append(f"{self._project_total:,} in project")
+        if self.current_id:
+            broken = self._broken_links()
+            if broken:
+                parts.append(f"broken link(s): {', '.join(broken)}")
         self.statusBar().showMessage(" · ".join(parts))
 
     def closeEvent(self, event) -> None:
@@ -1289,6 +1468,13 @@ def main() -> int:
     application.setApplicationName("Lekhak")
     application.setOrganizationName("Lekhak")
     application.setDesktopFileName("lekhak")  # matches lekhak.desktop on Wayland/GNOME
+    # Interface font only; the editor is pinned to 12 pt independently, so
+    # this never reaches document content.
+    stored_size = QSettings().value("ui/fontSize", type=int)
+    if stored_size:
+        interface_font = application.font()
+        interface_font.setPointSize(stored_size)
+        application.setFont(interface_font)
     window = MainWindow()
     window.show()
     return application.exec()

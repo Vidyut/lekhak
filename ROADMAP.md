@@ -136,30 +136,51 @@ sibling.
   plus binder context-menu entries (right-click loads the document first).
   Merge confirms with an explicit warning about dropped metadata.
 
-### 1.8 Interface font size in preferences
+### 1.8 Interface font size in preferences — DONE
 **Request:** font-size picker in Preferences — **for the interface only**
 (menus, binder, corkboard, outliner, synopsis, status bar); the editor
 text keeps the existing zoom (View → Zoom In/Out, Ctrl+0).
-**Danger notes (why this is queued carefully):**
-- `reset_zoom` currently hardcodes 12 pt on the editor — unrelated to this
-  item, but a reminder that font code hides hardcodes.
-- Saved HTML stores its own body font size (`toHtml()` round-trip), so the
-  interface font must never be written into document content.
-- Qt widget fonts do not cascade retroactively; every visible widget needs
-  the size applied on start and on change.
-**Add:** a Preferences dialog (Edit → Preferences…) persisting to
-`QSettings` (org "Lekhak"), a size picker (spin box, ~9–20 pt, default
-system), applied to the whole UI via application font
-(`QApplication.setFont`) at startup and live; no effect on stored
-documents or editor content.
+**Implemented (2026-10-20):** Edit → Preferences… (`Ctrl+,`) opens a dialog
+with a 8–24 pt interface-size picker and a note that the editor keeps its
+own size. The choice persists to `QSettings` (`ui/fontSize`, org/app
+"Lekhak") and is applied in `main()` *before* the window is built, so a
+fresh launch starts at the right size; the dialog applies it live too.
 
-### 1.5 Internal links
+The two footguns this had to dodge, both confirmed against a running
+session rather than assumed:
+- **Live propagation.** `QApplication.setFont` alone does **not** reach
+  widgets that already exist — a live change left the binder at 9 pt.
+  `preferences()` therefore also calls `setFont` on the window, which
+  cascades to existing children. Tree items carry no per-item font, so
+  they follow.
+- **The editor must never inherit it.** The editor is pinned with an
+  explicit `setFont` to 12 pt at construction (`reset_zoom`'s number),
+  and an explicit font ignores the cascade — so the tree moves and the
+  editor does not. This matters because `toHtml()` round-trips the body
+  font size: if the interface size reached the editor it would be written
+  into stored document content. `setHtml` still applies each document's
+  own stored size on load, so existing documents are unaffected.
+Verified: set 20 pt → tree 20 / editor 12 in the same session, and across
+a simulated relaunch.
+
+### 1.5 Internal links — DONE
 **Request:** link to internal documents — a picker, and Obsidian-style
 `[[wiki]]` links that resolve by title and open the page on click.
-**Add:** a link picker in the editor toolbar; `[[Title]]` autolinked to a
-document id on render; click-through in the editor; broken-link indicator in
-the binder. Resolution rules: exact title match, then case-insensitive, then
-ambiguous-list disambiguation.
+**Implemented (2026-10-20):** `[[Title]]` typed in the editor is resolved on
+load into a clickable link and stored again as plain `[[Title]]`, so links
+survive a retitle and stay readable in the file. Resolution order: exact
+title, then case-insensitive, then substring (substring only ever *offers*
+matches for a picker, never auto-opens one). A broken target renders as a red
+`[missing: Title]` and is counted in the status bar. Document → Link to
+Section… (Ctrl+L) picks a document and inserts `[[Title]]` at the cursor.
+**Related fixes:** resolved-link chrome is canonicalised back to `[[Title]]`
+in `Project.canonicalize_links()` before every write, so the resolved markup
+never reaches disk (a save would otherwise freeze the resolution and break
+retitle self-healing). Internal link clicks are handled by a `LinkEditor`
+QTextEdit subclass emitting a signal, since plain QTextEdit has no link-click
+support. Palette link colour is read via `.color().name()` — `palette().link()`
+returns a QBrush. `plain_text()` strips `[[ ]]`, keeping link markers out of
+word counts and exports.
 
 ### 1.6 DOCX/PDF page control
 **Request:** mark chapters/scenes as starting on a right or left page; insert
@@ -256,3 +277,13 @@ Anything above that didn't earn a slot gets collected here as it arrives.
   follows the same rule.
 - Codex may pick up any item directly; claim it in a commit message
   (`claim: 1.4 split/merge`) so work isn't duplicated.
+- **Broad compatibility, low friction.** Python floor is **3.9** — any
+  common distro/system interpreter, no exotic versions. Two runtime
+  dependencies (PySide6, python-docx), no environment or tooling the user
+  has to assemble; `pipx install .` or `pip install --user .` is the
+  install path. No new dependency unless it is genuinely unavoidable, and
+  a floor bump needs a recorded reason here. The floor is held by
+  `str.removeprefix` (3.9) and the lazy `from __future__ import
+  annotations` unions; keep new annotations under that import and prefer
+  3.9-safe stdlib. Verify with
+  `ast.parse(src, feature_version=(3, 9))` across `src/ scripts/ tests/`.

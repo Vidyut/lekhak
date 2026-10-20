@@ -396,5 +396,93 @@ class SplitMergeTests(unittest.TestCase):
         self.assertEqual(merged.word_count, 3)
 
 
+class WikiLinkTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.project = Project.create(Path(self.temporary.name) / "Novel", "Novel")
+        self.root = self.project.documents()[0]
+        self.chapter = self.project.add_document(
+            "Chapter One", self.root.id, "chapter")
+        self.scene_a = self.project.add_document(
+            "Scene A", self.chapter.id, "scene")
+        self.scene_b = self.project.add_document(
+            "Scene B", self.chapter.id, "scene")
+        self.project.set_metadata(self.scene_a.id, {"Location": "Mars"})
+        self.project.set_metadata(self.scene_b.id, {"Location": "Venus"})
+
+    def tearDown(self):
+        self.project.close()
+        self.temporary.cleanup()
+
+    def test_resolve_link_exact_and_case_insensitive(self):
+        self.assertEqual(
+            [d.id for d in self.project.resolve_link("Scene A")],
+            [self.scene_a.id])
+        self.assertEqual(
+            [d.id for d in self.project.resolve_link("scene a")],
+            [self.scene_a.id])
+
+    def test_resolve_link_substring_offers_candidates_without_winning(self):
+        matches = self.project.resolve_link("Scene")
+        self.assertEqual(
+            {d.id for d in matches},
+            {self.scene_a.id, self.scene_b.id})
+
+    def test_resolve_link_broken_and_empty(self):
+        self.assertEqual(self.project.resolve_link("Nope"), [])
+        self.assertEqual(self.project.resolve_link("   "), [])
+
+    def test_resolve_link_follows_a_retitle(self):
+        self.project.update_document(self.scene_a.id, title="Renamed")
+        self.assertEqual(
+            [d.id for d in self.project.resolve_link("Renamed")],
+            [self.scene_a.id])
+        self.assertEqual(self.project.resolve_link("Scene A"), [])
+
+    def test_wiki_targets_reports_resolution_per_document(self):
+        self.project.write_content(
+            self.scene_a.id,
+            "<p>See [[Scene B]] and [[Nope]].</p>")
+        targets = dict(self.project.wiki_targets(self.scene_a.id))
+        self.assertEqual(
+            [d.id for d in targets["Scene B"]],
+            [self.scene_b.id])
+        self.assertEqual(targets["Nope"], [])
+
+    def test_plain_text_strips_wiki_markers_for_counts_and_export(self):
+        self.project.write_content(
+            self.scene_a.id,
+            "<p>See [[Scene B]] and [[Nope]].</p>")
+        text = self.project.plain_text(self.project.read_content(self.scene_a.id))
+        self.assertNotIn("[[", text)
+        self.assertNotIn("]]", text)
+        self.assertEqual(text, "See Scene B and Nope.")
+
+    def test_plain_text_stripping_is_idempotent(self):
+        self.project.write_content(self.scene_a.id, "<p>See [[Scene B]].</p>")
+        once = self.project.plain_text(self.project.read_content(self.scene_a.id))
+        self.assertEqual(self.project.plain_text(once), once)
+
+    def test_canonicalize_links_restores_editor_markup_to_wiki_form(self):
+        html = (
+            '<p>See <a href="lekhak://doc/x"><span style="color:#0000ff;">'
+            "Scene B</span></a> and "
+            '<a href="lekhak://missing"><span style="color:#c0392b;">'
+            "[missing: Nope]</span></a>.</p>"
+        )
+        canonical = self.project.canonicalize_links(html)
+        self.assertIn("[[Scene B]]", canonical)
+        self.assertIn("[[Nope]]", canonical)
+        self.assertNotIn("<a ", canonical)
+        self.assertNotIn("missing:", canonical)
+
+    def test_canonicalize_links_is_idempotent_and_leaves_plain_text_alone(self):
+        plain = "<p>Ordinary prose with no links.</p>"
+        self.assertEqual(self.project.canonicalize_links(plain), plain)
+        once = self.project.canonicalize_links(
+            '<p><a href="lekhak://doc/x">Scene B</a></p>')
+        self.assertEqual(self.project.canonicalize_links(once), once)
+
+
 if __name__ == "__main__":
     unittest.main()

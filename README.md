@@ -15,6 +15,8 @@ transparent, recoverable, and designed around ordinary files.
   rollup word counts on containers
 - Corkboard cards linked to binder structure and synopses
 - Rich-text editor and synopsis inspector
+- Distraction-free focus mode and adjustable interface font size
+  (Edit → Preferences…, `Ctrl+,`) — the editor keeps its own zoom
 - Paragraph styles, font controls, alignment, lists, and clear formatting
 - Section find/replace, zoom controls, and distraction-free focus mode
 - Per-section word targets with live progress
@@ -40,22 +42,32 @@ transparent, recoverable, and designed around ordinary files.
 - Named section snapshots with reversible restoration
 - Split a section at the cursor (`Ctrl+K`); merge a section with its next
   sibling (snapshots first, history preserved) — menu and binder context menu
+- Obsidian-style `[[Title]]` internal links that resolve by title, survive a
+  retitle, and are click-through in the editor; broken targets show in the
+  status bar; insert one with `Ctrl+L`
 - Word counts and keyboard shortcuts
 
 Projects are directories ending in `.lekhak`. Existing `.manuscript` projects
 remain supported. Section contents live in
 `documents/*.html`; `project.sqlite3` stores titles, ordering, and metadata.
 
-## Run on Ubuntu
+## Install
+
+Python 3.9+ (any common distro/system Python), Qt 6 via PySide6. Two
+dependencies, no environment juggling:
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e .
+# easiest — pipx installs into its own isolated venv and puts `lekhak` on PATH
+pipx install .
+
+# or into any Python you already have
+pip install --user .
 lekhak
 ```
 
-The application requires Python 3.11+ and Qt 6 via PySide6.
+`pip install .` inside a virtualenv works too, but you should not need
+one. Windows and macOS shortcuts: `scripts/install_windows.ps1`,
+`scripts/install_macos.sh` (see Desktop launchers below).
 
 ## Desktop launchers
 

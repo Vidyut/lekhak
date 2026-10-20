@@ -461,7 +461,67 @@ class Project:
     @staticmethod
     def plain_text(html: str) -> str:
         text = re.sub(r"<(br|/p|/div|/h[1-6])\b[^>]*>", "\n", html, flags=re.I)
+        text = re.sub(r"\[\[([^\[\]]+)\]\]", r"\1", text)
         return unescape(TAG_RE.sub("", text)).strip()
+
+    WIKI_LINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
+
+    def resolve_link(self, target: str) -> list[Document]:
+        """Documents a `[[link]]` target points at.
+
+        Exact (case-insensitive) title match wins outright; substring
+        matches are returned too, but only ever as picker candidates — a
+        caller must not auto-open more than one result. Empty means broken.
+        """
+        needle = target.strip().casefold()
+        if not needle:
+            return []
+        documents = self.documents()
+        exact = [d for d in documents if d.title.casefold() == needle]
+        if exact:
+            return exact
+        # Substring only as a fallback, and only title-inside-target so a
+        # short token cannot swallow an unrelated long title.
+        return [
+            d for d in documents
+            if needle in d.title.casefold() or d.title.casefold() in needle
+        ]
+
+    def wiki_targets(self, document_id: str) -> list[tuple[str, list[Document]]]:
+        """Each distinct `[[target]]` in a document, with what it resolves to."""
+        html = self.read_content(document_id)
+        seen: list[str] = []
+        results: list[tuple[str, list[Document]]] = []
+        for match in self.WIKI_LINK_RE.finditer(html):
+            target = match.group(1).strip()
+            if target and target not in seen:
+                seen.append(target)
+                results.append((target, self.resolve_link(target)))
+        return results
+
+    LINK_HREF_RE = re.compile(
+        r'<a\s[^>]*?href=["\']lekhak://[^"\']*["\'][^>]*>(.*?)</a>',
+        re.I | re.S,
+    )
+
+    def canonicalize_links(self, html: str) -> str:
+        """Editor HTML back to stored form, so resolved links never hit disk.
+
+        The editor resolves `[[Title]]` into `<a>` elements on load (a
+        broken target becoming `[missing: Title]`). Saving that markup
+        would freeze the resolution forever: a later retitle could not heal
+        it, and the file would stop reading as plain `[[Title]]`. So each
+        link anchor is rewritten back to `[[Title]]`, using the anchor's
+        own visible text as the target.
+        """
+
+        def restore(match: re.Match) -> str:
+            text = unescape(TAG_RE.sub("", match.group(1))).strip()
+            if text.startswith("[missing: ") and text.endswith("]"):
+                text = text[len("[missing: "):-1].strip()
+            return f"[[{text}]]" if text else ""
+
+        return self.LINK_HREF_RE.sub(restore, html)
 
     def search(self, query: str) -> list[Document]:
         needle = query.casefold().strip()
