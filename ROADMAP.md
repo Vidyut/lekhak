@@ -467,11 +467,60 @@ Automatic/Default and heals on the next actual change.
 ### 2.2 Conditional content and link stripping
 **Request:** "only internal links to documents getting published should be
 available to publish; all other internal links stripped."
-**Model:** a compile-time rule set per book. Each internal link resolves
-against the exported document set; links outside it are stripped or replaced
-per a chosen policy (`strip`, `plain-text`, `keep-as-note`). Conditional
-blocks in templates can include/exclude whole sections by metadata predicate
-(`$if(Metadata.Status = Draft)`-style, or a small expression language).
+**Model:** resolved at compile time, not at write time — the editor keeps
+storing bare `[[wiki]]` markers and its `lekhak://` anchors unchanged, so a
+link's meaning depends on what the current export contains (the same
+manuscript can be whole-project for EPUB and a single chapter for a draft).
+
+- **Resolution is exact-title only**, matching what the editor never
+  auto-opens: a casefold-equal title resolves (first in binder order on a
+  duplicate), a substring-only or ambiguous target is treated like a broken
+  one — picker candidates are the editor's job, not compile's.
+- **Published links** (target in the exported set) become real links wherever
+  the format can carry one: `#unit-N` fragment anchors in single-file HTML
+  (one invisible anchor per unit), `section-N.xhtml` in EPUB, Word-internal
+  `w:hyperlink`/`w:bookmarkStart` pairs in DOCX (python-docx has no hyperlink
+  API, so the elements are built by hand; every heading gets a `d<id>`
+  bookmark). Plain text keeps the words — a text file cannot link.
+- **Unpublished links** (broken, ambiguous or outside the set) follow a strip
+  policy: `strip` removes the link's words from the output entirely,
+  `plain-text` (the default) keeps the words with no link, `keep-as-note`
+  keeps them plus " (not in this export)". The policy is per **source**
+  document: the first ancestor folder with `book_settings["links"]` wins, else
+  the project's `link_policy` setting (a Preferences-dialog row; inert when no
+  project is open). Published links ignore the policy — a link to a published
+  document is never stripped.
+- **Header/footer slots** run through the same link pass, against this
+  compile's document set, with the global policy (project chrome belongs to no
+  one book). Selection exports have no project chrome, so this only matters
+  for whole-project compiles.
+- **Conditional blocks** live in template slots only, never in document prose:
+  `$if(Key)`, `$if(Key = Value)`, `$if(Key != Value)`, `$else`, `$endif`,
+  evaluated in `TemplateSet.fill()` against the same values that fill
+  `${...}`. Conditions compare case-insensitively; a bare key is true when
+  its value is non-empty; the operators need surrounding spaces so keys may
+  contain them; nesting works. A hand-edited slot degrades to something
+  printable — an unmatched `$if` keeps its branch state to the end, a stray
+  `$else`/`$endif` is dropped, markers never leak into output.
+
+**Implemented (2026-10-20):** two commits — core (`4bb615f`), window
+(`07c2c0b`). `TemplateSet.conditionals` plus `_compile_scope`/`_prepare_links`/`rewrite_wiki_links` in `project.py`
+(scope extracted from `compile_units` so header/footer strings run through the
+same machinery), thread-through in `compile_units`/`_render_document`, unit
+anchors in `export_html`, bookmarks and the token-splitting run builder in
+`export_docx` (`\x02<id>\x03<text>\x04` survives `plain_text`). Window: the
+inspector's folder book section gains an "Unpublished links" combo
+(Automatic = project default), Preferences gains the project-wide default
+row. Tests: `tests/test_content_rules.py` (14) plus three app tests, suite
+225.
+**Open edges:** a `$if(...)` condition value containing `)` cannot be matched
+(the piece parser stops at the first one); conditionals do not apply to DOCX
+(the DOCX path has no template slots); an epub/html link to a *scene* lands on
+its chapter's unit/section top — DOCX gets scene-level precision via the
+scene's own heading; header/footer links always use the global policy, never a
+book's; the exact-title-only rule means a deliberately shortened
+`[[Chapter]]` for "Chapter Two" is an unresolved link and follows the policy
+rather than silently picking a target.
 
 ### 2.3 Importers and full round-trip export
 **Request:** "eventually, importer/exporter." Then: "I can give you a huge
