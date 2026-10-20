@@ -292,10 +292,22 @@ Anything above that didn't earn a slot gets collected here as it arrives.
   numbering or import/export feature. An interchange concern (binder
   numbers, TOC markers) is shown on the way out and stripped on the way in;
   it never lands in the stored manuscript.
-- **Lean over clever.** Before implementing a feature, check whether it
-  needs a new mechanism, a new stored role, a new regex in a write path or
-  a new code path that can touch content. If it does, stop and say
-  "I don't advise this because…" with the specific risk or bloat, and let
-  the decision be made explicitly rather than by default. Prefer the
-  representation that has no way to corrupt data over the one that merely
-  looks tidier.
+- **Lean over clever, and every line must earn its place.** Before
+  implementing a feature, check both sides: what it costs (a new mechanism,
+  a new stored role, a new regex in a write path, a new code path that can
+  touch content) and what it buys. A cosmetic or low-value feature that
+  needs a lot of code is bad code regardless of how well it is written —
+  8000 lines to make the interface sparkly is a no. If the cost is real,
+  stop and say "I don't advise this because…" with the specific risk or
+  bloat, and let the decision be made explicitly rather than by default —
+  this applies even to essential features, where the answer is to explain
+  the trade-off and get an opinion rather than to proceed silently. Prefer
+  the representation that has no way to corrupt data over the one that
+  merely looks tidier.
+- **Comment the why, not the what.** Every load-bearing or non-obvious
+  block says what it does *and why it is done that way*, so that a future
+  change to the "why" makes the comment visibly stale rather than silently
+  wrong. The test: can a reader tell, at the point of use, whether these
+  lines are safe to remove? If not, the comment is missing. This is not
+  decoration — uncommented invariants get "tidied up" and break in ways
+  that cost someone their work.
