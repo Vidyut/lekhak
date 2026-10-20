@@ -52,6 +52,10 @@ TAG_RE = re.compile(r"<[^>]+>")
 # depth, and several items may share the top level. Folder is a neutral
 # container; chapter/scene/note are the writer's shorthand for intended use.
 DOCUMENT_KINDS = {"folder", "chapter", "scene", "note"}
+# How a document may demand to start on a page (1.6). "right" is recto
+# and "next-odd" the literal parity phrasing — both emit the same DOCX
+# ODD_PAGE section, as the user chose; likewise left/next-even.
+PAGE_BREAK_VALUES = ("auto", "left", "right", "next-odd", "next-even")
 # Kinds that contribute prose to a compile by default. Book-level compile
 # settings will override this per document later; folders and notes stay out.
 EXPORT_KINDS = {"chapter", "scene"}
@@ -74,6 +78,7 @@ class Document:
     word_target: int
     kind: str
     word_count: int = 0
+    page_break: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -147,6 +152,7 @@ class Project:
                 word_target INTEGER NOT NULL DEFAULT 0,
                 word_count INTEGER NOT NULL DEFAULT 0,
                 kind TEXT NOT NULL DEFAULT 'scene',
+                page_break TEXT NOT NULL DEFAULT 'auto',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -184,6 +190,10 @@ class Project:
         if "word_count" not in columns:
             self.connection.execute(
                 "ALTER TABLE documents ADD COLUMN word_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "page_break" not in columns:
+            self.connection.execute(
+                "ALTER TABLE documents ADD COLUMN page_break TEXT NOT NULL DEFAULT 'auto'"
             )
         metadata_columns = {
             row[1] for row in self.connection.execute("PRAGMA table_info(document_metadata)")
@@ -283,8 +293,8 @@ class Project:
         than querying the database themselves.
         """
         rows = self.db.execute(
-            "SELECT id,parent_id,title,synopsis,position,word_target,kind,word_count "
-            "FROM documents"
+            "SELECT id,parent_id,title,synopsis,position,word_target,kind,"
+            "word_count,page_break FROM documents"
         ).fetchall()
         by_parent: dict[str | None, list[Document]] = {}
         for row in rows:
@@ -303,11 +313,12 @@ class Project:
 
     def update_document(self, document_id: str, *, title: str | None = None,
                         synopsis: str | None = None,
-                        word_target: int | None = None) -> None:
-        """Set the given metadata fields on a document; None means leave alone.
+                        word_target: int | None = None,
+                        page_break: str | None = None) -> None:
+        """Set the given properties on a document; None means leave alone.
 
-        Title, synopsis and word target only — prose is never touched here,
-        it goes through write_content().
+        Title, synopsis, word target and page start only — prose is never
+        touched here, it goes through write_content().
         """
         fields: list[str] = []
         values: list[str] = []
@@ -320,6 +331,11 @@ class Project:
         if word_target is not None:
             fields.append("word_target=?")
             values.append(str(max(0, word_target)))
+        if page_break is not None:
+            if page_break not in PAGE_BREAK_VALUES:
+                raise ValueError(f"Unknown page start: {page_break}")
+            fields.append("page_break=?")
+            values.append(page_break)
         if not fields:
             return
         fields.append("updated_at=?")
@@ -393,8 +409,8 @@ class Project:
         if row is None:
             return None
         sibling = self.db.execute(
-            "SELECT id,parent_id,title,synopsis,position,word_target,kind,word_count "
-            "FROM documents WHERE parent_id IS ? AND position>? "
+            "SELECT id,parent_id,title,synopsis,position,word_target,kind,"
+            "word_count,page_break FROM documents WHERE parent_id IS ? AND position>? "
             "ORDER BY position LIMIT 1", (row[0], row[1]),
         ).fetchone()
         return Document(**dict(sibling)) if sibling else None
@@ -487,7 +503,7 @@ class Project:
         self.delete_document(second_id)
         row = self.db.execute(
             "SELECT id,parent_id,title,synopsis,position,word_target,kind,"
-            "word_count FROM documents WHERE id=?", (first_id,),
+            "word_count,page_break FROM documents WHERE id=?", (first_id,),
         ).fetchone()
         return Document(**dict(row))
 
@@ -1170,6 +1186,7 @@ class Project:
         (page numbers only) is inserted at the top; Word or LibreOffice
         fills it in on field update."""
         from docx import Document as DocxDocument
+        from docx.enum.section import WD_SECTION_START
         from docx.oxml import OxmlElement
         from docx.oxml.ns import qn
 
@@ -1191,6 +1208,16 @@ class Project:
         for element in (begin, instruction, separate, placeholder, end):
             run._r.append(element)
         for document in self._export_documents(selected_ids):
+            # 1.6 page starts: a marked document opens a new section with
+            # the demanded parity; Word itself inserts the blank page when
+            # the flow lands on the wrong side. "right" and "next-odd" are
+            # the same demand (recto = odd in an LTR book) and emit the
+            # same section type, likewise left/next-even — the five values
+            # are the writer's vocabulary, not five behaviours.
+            if document.page_break in ("right", "next-odd"):
+                output.add_section(WD_SECTION_START.ODD_PAGE)
+            elif document.page_break in ("left", "next-even"):
+                output.add_section(WD_SECTION_START.EVEN_PAGE)
             output.add_heading(document.title, level=1 if document.kind == "chapter" else 2)
             for paragraph in self.plain_text(self.read_content(document.id)).split("\n"):
                 if paragraph.strip():

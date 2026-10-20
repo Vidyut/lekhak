@@ -1042,6 +1042,19 @@ class MainWindow(QMainWindow):
         self.target.setSpecialValueText("No target")
         self.target.valueChanged.connect(self._metadata_changed)
 
+        # Page start (1.6): which side of the spread this document must
+        # open on in DOCX; "auto" flows on. Saved with the document.
+        self.page_break_box = QComboBox()
+        for label, value in (
+            ("Automatic flow", "auto"),
+            ("Left page (verso)", "left"),
+            ("Right page (recto)", "right"),
+            ("Next odd page", "next-odd"),
+            ("Next even page", "next-even"),
+        ):
+            self.page_break_box.addItem(label, value)
+        self.page_break_box.currentIndexChanged.connect(self._metadata_changed)
+
         # Metadata (1.12): the same Field/Type/Options/Value rows the Edit
         # Metadata dialog edits, inline and live — project-level fields on
         # folders/root, the document's own rows everywhere else.
@@ -1058,6 +1071,8 @@ class MainWindow(QMainWindow):
         inspector_layout.addWidget(self.synopsis)
         inspector_layout.addWidget(QLabel("Section target"))
         inspector_layout.addWidget(self.target)
+        inspector_layout.addWidget(QLabel("Page start"))
+        inspector_layout.addWidget(self.page_break_box)
         inspector_layout.addWidget(QLabel("Metadata"))
         inspector_layout.addWidget(self.metadata_table)
         metadata_buttons = QHBoxLayout()
@@ -1198,6 +1213,7 @@ class MainWindow(QMainWindow):
         self.editor.setEnabled(enabled)
         self.corkboard.setEnabled(enabled)
         self.synopsis.setEnabled(enabled)
+        self.page_break_box.setEnabled(enabled)
         self.metadata_table.setEnabled(enabled)
         self.metadata_add_button.setEnabled(enabled)
         self.metadata_remove_button.setEnabled(enabled)
@@ -1543,12 +1559,18 @@ class MainWindow(QMainWindow):
             self._resolve_wiki_links()
             self.synopsis.setPlainText(document.synopsis)
             self.target.setValue(document.word_target)
+            # Junk stored by a hand-edited file shows as Automatic; the
+            # next save heals it.
+            self.page_break_box.setCurrentIndex(
+                max(0, self.page_break_box.findData(document.page_break))
+            )
             if document.kind == "folder" and self.views.currentWidget() is self.editor:
                 self.views.setCurrentWidget(self.corkboard)
         else:
             self.editor.clear()
             self.synopsis.clear()
             self.target.setValue(0)
+            self.page_break_box.setCurrentIndex(0)
         self._populate_metadata_table()
         self._refresh_related()
         self.loading = False
@@ -1670,6 +1692,7 @@ class MainWindow(QMainWindow):
                 self.current_id,
                 synopsis=self.synopsis.toPlainText(),
                 word_target=self.target.value(),
+                page_break=self.page_break_box.currentData(),
             )
             # 1.9 session resume: written on every save path (debounce,
             # document switch, close) so a crash still resumes — the

@@ -160,6 +160,40 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(self.project.project_metadata(),
                          {"Verse": ("Three", "text", [])})
 
+    def test_page_break_defaults_persist_and_reject_unknown_values(self):
+        root = self.project.documents()[0]
+        chapter = self.project.add_document("Chapter", root.id, "chapter")
+        self.assertEqual(chapter.page_break, "auto")
+
+        self.project.update_document(chapter.id, page_break="right")
+        found = next(d for d in self.project.documents() if d.id == chapter.id)
+        self.assertEqual(found.page_break, "right")
+
+        with self.assertRaises(ValueError):
+            self.project.update_document(chapter.id, page_break="middle")
+        found = next(d for d in self.project.documents() if d.id == chapter.id)
+        self.assertEqual(found.page_break, "right")   # unchanged by the refusal
+
+    def test_docx_section_parity_for_every_page_break_value(self):
+        root = self.project.documents()[0]
+        for index, mark in enumerate(("right", "next-odd", "left", "next-even")):
+            chapter = self.project.add_document(f"Chapter {index}", root.id, "chapter")
+            self.project.write_content(chapter.id, "<p>Body text.</p>")
+            self.project.update_document(chapter.id, page_break=mark)
+        plain = self.project.add_document("Plain", root.id, "chapter")
+        self.project.write_content(plain.id, "<p>Flows on.</p>")
+
+        destination = Path(self.temporary.name) / "marks.docx"
+        self.project.export_docx(destination)
+
+        import zipfile
+        with zipfile.ZipFile(destination) as archive:
+            xml = archive.read("word/document.xml").decode("utf-8")
+        # right and next-odd are one demand (recto = odd), likewise left
+        # and next-even; "auto" adds no section at all.
+        self.assertEqual(xml.count('w:val="oddPage"'), 2)
+        self.assertEqual(xml.count('w:val="evenPage"'), 2)
+
     def test_related_documents_matches_whole_words_in_both_directions(self):
         root = self.project.documents()[0]
         aaxyl = self.project.add_document("Aaxyl", root.id, "note")

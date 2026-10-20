@@ -182,7 +182,7 @@ support. Palette link colour is read via `.color().name()` — `palette().link()
 returns a QBrush. `plain_text()` strips `[[ ]]`, keeping link markers out of
 word counts and exports.
 
-### 1.6 DOCX page control
+### 1.6 DOCX page control — DONE
 **Request:** mark chapters/scenes as starting on a right or left page; insert
 a blank page when the flow lands on the wrong side.
 **Add:** a per-document `page_break` property (`auto`, `left`, `right`,
@@ -195,6 +195,20 @@ PDF takes that DOCX through whatever converter they already have. This
 makes DOCX fidelity the priority for this item and for 1.7's page
 numbers; a future PDF export, if it ever happens, is a thin wrapper over
 this DOCX, not a parallel renderer.
+**Implemented (2026-10-20):** `page_break` is a documents column (guarded
+migration, default `auto`) carried on `Document`, written through
+`update_document`, chosen in the inspector's "Page start" combo and saved
+with the document. DOCX export opens a new section per marked document:
+`right`/`next-odd` emit ODD_PAGE, `left`/`next-even` emit EVEN_PAGE — the
+user chose to keep all five values as the writer's vocabulary even though
+each pair is one demand (recto = odd in an LTR book), and Word inserts the
+blank page itself when the flow lands wrong. `auto` adds no section, so
+existing exports are byte-identical until something is marked. Scope
+decision (2026-10-20): page presets (paper size, mirror margins, footer
+page numbers, gutter) were NOT part of this item — no spec for them exists
+in the repo; capture separately if wanted. Tests: 2 project-level (parity
+counts in the DOCX XML, persistence + rejection) and 4 offscreen GUI tests
+in `tests/test_app_pagebreak.py`.
 
 ### 1.7 Table of contents — DONE (PDF part waits on the PDF writer)
 **Request:** TOC with links for ebook, links and/or page numbers for PDF,
