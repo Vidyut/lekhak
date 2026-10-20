@@ -322,6 +322,61 @@ class BookSettingsTests(unittest.TestCase):
         self.assertIn("First light prose.", exported)
         self.assertIn("Generic front text.", exported)
 
+    # --- link policy (2.2) --------------------------------------------------
+
+    def test_link_policy_combo_persists_and_clearing_removes_the_entry(self):
+        self.window._select_document(self.book.id)
+        box = self.window.link_policy_box
+        values = [box.itemData(index) for index in range(box.count())]
+        self.assertEqual(values, ["", "strip", "plain-text", "keep-as-note"])
+
+        box.setCurrentIndex(box.findData("keep-as-note"))
+        self.assertEqual(
+            self.project.book_settings(self.book.id),
+            {"links": "keep-as-note"},
+        )
+
+        box.setCurrentIndex(box.findData(""))
+        self.assertEqual(self.project.book_settings(self.book.id), {})
+
+    def test_link_policy_row_is_folder_only(self):
+        self.window._select_document(self.book.id)
+        self.assertFalse(self.window.link_policy_box.isHidden())
+        self.window._select_document(self.scene.id)
+        self.assertTrue(self.window.link_policy_box.isHidden())
+        self.assertTrue(self.window.link_policy_label.isHidden())
+
+    def test_preferences_offers_and_saves_the_project_link_default(self):
+        from lekhak.app import PreferencesDialog
+
+        self.assertEqual(
+            self.project.get_setting("link_policy", "plain-text"),
+            "plain-text",
+        )
+        with patch.object(PreferencesDialog, "exec",
+                          return_value=QDialog.Accepted):
+            self.window.preferences()
+        self.assertEqual(
+            self.project.get_setting("link_policy"), "plain-text")
+
+        dialog = PreferencesDialog(11, {"fonts": False, "paragraphs": False,
+                                        "inline": False, "alignment": False},
+                                   "strip")
+        try:
+            self.assertEqual(dialog.link_policy_box.currentData(), "strip")
+            self.assertTrue(dialog.link_policy_box.isEnabled())
+        finally:
+            dialog.deleteLater()
+
+        # No project open: the row stays visible but inert.
+        bare = PreferencesDialog(11, {"fonts": False, "paragraphs": False,
+                                      "inline": False, "alignment": False},
+                                 None)
+        try:
+            self.assertFalse(bare.link_policy_box.isEnabled())
+        finally:
+            bare.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()

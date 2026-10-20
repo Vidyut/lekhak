@@ -60,7 +60,7 @@ from PySide6.QtWidgets import (
 )
 
 from .importer import dump_books, import_all_books, parse_dump
-from .project import EXPORT_KINDS, Project
+from .project import DEFAULT_LINK_POLICY, EXPORT_KINDS, Project
 from .templates import (
     TemplateSet, copy_template_set, discover_template_sets,
     project_template_root,
@@ -232,8 +232,18 @@ class ProjectReplaceDialog(QDialog):
         self.refresh_preview()
 
 
+# Display labels for the 2.2 strip policies, in UI order; the values are
+# the strings book_settings / the project setting store.
+LINK_POLICY_CHOICES = (
+    ("Strip unpublished", "strip"),
+    ("Plain text", "plain-text"),
+    ("Keep as note", "keep-as-note"),
+)
+
+
 class PreferencesDialog(QDialog):
-    def __init__(self, font_size: int, paste: dict[str, bool], parent=None) -> None:
+    def __init__(self, font_size: int, paste: dict[str, bool],
+                 link_policy: str | None = None, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Preferences")
         layout = QVBoxLayout(self)
@@ -243,6 +253,17 @@ class PreferencesDialog(QDialog):
         self.size_spin.setValue(font_size)
         self.size_spin.setSuffix(" pt")
         form.addRow("Interface font size:", self.size_spin)
+        self.link_policy_box = QComboBox()
+        for label, value in LINK_POLICY_CHOICES:
+            self.link_policy_box.addItem(label, value)
+        self.link_policy_box.setCurrentIndex(
+            max(0, self.link_policy_box.findData(link_policy or DEFAULT_LINK_POLICY))
+        )
+        # A project-wide default is a project property; without a project
+        # open the row stays visible but inert, so the vocabulary is
+        # discoverable before a book exists.
+        self.link_policy_box.setEnabled(link_policy is not None)
+        form.addRow("Unpublished links:", self.link_policy_box)
         layout.addLayout(form)
         note = QLabel(
             "Applies to menus, binder, corkboard, outliner and panels. "
@@ -250,6 +271,12 @@ class PreferencesDialog(QDialog):
         )
         note.setWordWrap(True)
         layout.addWidget(note)
+        link_note = QLabel(
+            "What a [[link]] pointing outside the current export becomes "
+            "on export. A book folder can override this in the inspector."
+        )
+        link_note.setWordWrap(True)
+        layout.addWidget(link_note)
 
         layout.addWidget(QLabel("When pasting, keep:"))
         self.paste_fonts = QCheckBox("Fonts and colours")
@@ -1130,6 +1157,12 @@ class MainWindow(QMainWindow):
         cover_row = QHBoxLayout()
         cover_row.addWidget(self.book_cover_edit)
         cover_row.addWidget(self.book_cover_button)
+        # 2.2: what this book's [[links]] to documents outside the current
+        # export become; Automatic follows the project default.
+        self.link_policy_label = QLabel("Unpublished links")
+        self.link_policy_box = QComboBox()
+        self.link_policy_box.currentIndexChanged.connect(
+            self._book_settings_changed)
         self.doc_template_label = QLabel("Document template")
         self.doc_template_box = QComboBox()
         self.doc_template_box.currentIndexChanged.connect(
@@ -1159,6 +1192,8 @@ class MainWindow(QMainWindow):
         inspector_layout.addWidget(self.book_template_box)
         inspector_layout.addWidget(self.cover_label)
         inspector_layout.addLayout(cover_row)
+        inspector_layout.addWidget(self.link_policy_label)
+        inspector_layout.addWidget(self.link_policy_box)
         inspector_layout.addWidget(self.doc_template_label)
         inspector_layout.addWidget(self.doc_template_box)
         inspector_layout.addWidget(QLabel("Metadata"))
@@ -1311,6 +1346,7 @@ class MainWindow(QMainWindow):
         self.book_template_box.setEnabled(enabled)
         self.book_cover_edit.setEnabled(enabled)
         self.book_cover_button.setEnabled(enabled)
+        self.link_policy_box.setEnabled(enabled)
         self.doc_template_box.setEnabled(enabled)
         self.metadata_table.setEnabled(enabled)
         self.metadata_add_button.setEnabled(enabled)
@@ -1798,6 +1834,7 @@ class MainWindow(QMainWindow):
             self.templates_root_label, self.templates_root_box,
             self.book_template_label, self.book_template_box,
             self.cover_label, self.book_cover_edit, self.book_cover_button,
+            self.link_policy_label, self.link_policy_box,
         ):
             widget.setVisible(is_folder)
         self.doc_template_label.setVisible(is_prose)
@@ -1818,6 +1855,15 @@ class MainWindow(QMainWindow):
         self.templates_root_box.setChecked(document.is_templates_root)
         self.templates_root_box.blockSignals(False)
         self.book_cover_edit.setText(settings.get("cover", ""))
+        self.link_policy_box.blockSignals(True)
+        self.link_policy_box.clear()
+        self.link_policy_box.addItem("Automatic (project default)", "")
+        for label, value in LINK_POLICY_CHOICES:
+            self.link_policy_box.addItem(label, value)
+        self.link_policy_box.setCurrentIndex(
+            max(0, self.link_policy_box.findData(settings.get("links", "")))
+        )
+        self.link_policy_box.blockSignals(False)
         self.doc_template_box.blockSignals(True)
         self.doc_template_box.clear()
         self.doc_template_box.addItem("Default (set's own slot)", "")
@@ -1855,10 +1901,12 @@ class MainWindow(QMainWindow):
         if not document or document.kind != "folder":
             return
         # Blanks remove the entry — the folder falls back to matching a
-        # template by name and auto-detecting images/<id>/cover.*.
+        # template by name, auto-detecting images/<id>/cover.* and
+        # following the project link policy.
         self.project.set_book_settings(self.current_id, {
             "template": self.book_template_box.currentData() or "",
             "cover": self.book_cover_edit.text().strip(),
+            "links": self.link_policy_box.currentData() or "",
         })
 
     def _browse_cover(self) -> None:
@@ -2635,7 +2683,14 @@ class MainWindow(QMainWindow):
 
     def preferences(self) -> None:
         current = QApplication.font().pointSize()
-        dialog = PreferencesDialog(current, load_paste_prefs(), self)
+        # The link default (2.2) is a project property; None disables the
+        # row in the dialog rather than inventing a project-less store.
+        link_policy = (
+            self.project.get_setting("link_policy", DEFAULT_LINK_POLICY)
+            if self.project else None
+        )
+        dialog = PreferencesDialog(current, load_paste_prefs(), link_policy,
+                                   self)
         if dialog.exec() != QDialog.Accepted:
             return
         size = dialog.size_spin.value()
@@ -2653,7 +2708,14 @@ class MainWindow(QMainWindow):
         settings.setValue("paste/paragraphs", dialog.paste_paragraphs.isChecked())
         settings.setValue("paste/inline", dialog.paste_inline.isChecked())
         settings.setValue("paste/alignment", dialog.paste_alignment.isChecked())
-        self.statusBar().showMessage(f"Interface font set to {size} pt", 3000)
+        if self.project:
+            self.project.set_setting(
+                "link_policy", dialog.link_policy_box.currentData())
+            self.statusBar().showMessage(
+                f"Interface font set to {size} pt; unpublished links "
+                f"default to {dialog.link_policy_box.currentText()}", 3000)
+        else:
+            self.statusBar().showMessage(f"Interface font set to {size} pt", 3000)
 
     def replace_in_project(self) -> None:
         if not self.project:
