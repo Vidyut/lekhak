@@ -9,7 +9,7 @@ Layout of the window:
 
     left   binder tree (QTreeWidget, drag to reorder)
     center tabbed views: editor / corkboard / outliner
-    right  inspector: synopsis, word target, metadata
+    right  inspector: synopsis, word target, book/document templates, metadata
 
 Three rules that govern how views and Project interact, and where the
 tricky parts of this file come from:
@@ -39,7 +39,8 @@ from html import escape
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QDate, QEvent, QSize, QSettings, Qt, QTimer, QUrl, Signal,
+    QDate, QEvent, QItemSelectionModel, QSize, QSettings, Qt, QTimer, QUrl,
+    Signal,
 )
 from PySide6.QtGui import (
     QAction, QDesktopServices, QFont, QKeySequence, QTextBlockFormat,
@@ -47,7 +48,8 @@ from PySide6.QtGui import (
     QTextFormat, QTextListFormat,
 )
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog,
+    QDialogButtonBox,
     QFileDialog, QFontComboBox, QFormLayout, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel,
     QLineEdit, QMenu,
@@ -60,7 +62,8 @@ from PySide6.QtWidgets import (
 from .importer import dump_books, import_all_books, parse_dump
 from .project import EXPORT_KINDS, Project
 from .templates import (
-    copy_template_set, discover_template_sets, project_template_root,
+    TemplateSet, copy_template_set, discover_template_sets,
+    project_template_root,
 )
 
 
@@ -477,33 +480,65 @@ class MetadataDialog(QDialog):
         return self.table.values_types_options()
 
 
+def template_side_ids(documents) -> set[str]:
+    """Ids under a TEMPLATES root, the roots themselves included (2.1).
+
+    The flag lives on the root folder; everything below it is template
+    side — rendered below the manuscript and never exported as
+    manuscript.
+    """
+    by_id = {d.id: d for d in documents}
+    result: set[str] = set()
+    for document in documents:
+        current = document
+        while current is not None:
+            if current.is_templates_root:
+                result.add(document.id)
+                break
+            current = by_id.get(current.parent_id) if current.parent_id else None
+    return result
+
+
+def lifted_template_roots(documents, in_template) -> list:
+    """Flagged roots with no flagged ancestor: each subtree's lift anchor.
+
+    A templates root nested inside another stays inside that subtree;
+    only the outermost ones move to the bottom of the top level.
+    """
+    by_id = {d.id: d for d in documents}
+    anchors = []
+    for document in documents:
+        if document.id not in in_template or not document.is_templates_root:
+            continue
+        parent = by_id.get(document.parent_id) if document.parent_id else None
+        while parent is not None and not parent.is_templates_root:
+            parent = by_id.get(parent.parent_id) if parent.parent_id else None
+        if parent is None:
+            anchors.append(document)
+    return sorted(anchors, key=lambda d: d.position)
+
+
 class ExportOptionsDialog(QDialog):
-    def __init__(self, documents, template_sets, current_set_name: str,
+    """Confirm scope and template set (2.1).
+
+    Scope is whatever the binder and outliner have selected, gathered
+    before this opens — empty selection means the whole project, not an
+    error. The per-document checklist went: it could not express book
+    chrome, and the four File-menu entries still pick the format.
+    """
+
+    def __init__(self, summary: str, template_sets, current_set_name: str,
                  parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Export Options")
-        self.resize(620, 480)
+        self.resize(480, 240)
         self.template_sets = template_sets
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Include these chapters and scenes:"))
-        self.documents = QListWidget()
-        for document in documents:
-            prefix = document.kind.capitalize()
-            item = QListWidgetItem(f"{prefix}: {document.title}")
-            item.setData(Qt.UserRole, document.id)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked)
-            self.documents.addItem(item)
-        layout.addWidget(self.documents)
-        selection_buttons = QHBoxLayout()
-        select_all = QPushButton("Select all")
-        select_none = QPushButton("Select none")
-        select_all.clicked.connect(lambda: self._check_all(Qt.Checked))
-        select_none.clicked.connect(lambda: self._check_all(Qt.Unchecked))
-        selection_buttons.addWidget(select_all)
-        selection_buttons.addWidget(select_none)
-        selection_buttons.addStretch()
-        layout.addLayout(selection_buttons)
+        layout.addWidget(QLabel("Scope"))
+        self.summary_label = QLabel(summary)
+        self.summary_label.setWordWrap(True)
+        layout.addWidget(self.summary_label)
+        layout.addSpacing(12)
         layout.addWidget(QLabel(
             "Template set — slot files with ${Title}, ${Content}, "
             "${Synopsis}, ${WordCount}, ${ChapterNumber}, ${SceneNumber}, "
@@ -527,17 +562,6 @@ class ExportOptionsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-
-    def _check_all(self, state) -> None:
-        for index in range(self.documents.count()):
-            self.documents.item(index).setCheckState(state)
-
-    def selected_ids(self) -> set[str]:
-        return {
-            self.documents.item(index).data(Qt.UserRole)
-            for index in range(self.documents.count())
-            if self.documents.item(index).checkState() == Qt.Checked
-        }
 
     def selected_template_set(self):
         name = self.set_box.currentText()
@@ -996,6 +1020,9 @@ class MainWindow(QMainWindow):
         self.loading = False
         self.focus_mode = False
         self._project_total = 0
+        # Display-lifted templates roots (2.1): shown at the bottom of
+        # the binder's top level while their storage parent stays put.
+        self._lifted_roots: set[str] = set()
         # Paragraph styles (1.11): seeds plus this project's saved overrides.
         self._styles = dict(SEED_STYLES)
         self._user_styles: dict[str, dict] = {}
@@ -1010,6 +1037,9 @@ class MainWindow(QMainWindow):
 
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
+        # 2.1: exports compile from the tree selection, so both trees
+        # allow ctrl/shift ranges instead of one item at a time.
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tree.setDragDropMode(QTreeWidget.InternalMove)
         self.tree.currentItemChanged.connect(self._selection_changed)
         self.tree.itemChanged.connect(self._title_changed)
@@ -1043,6 +1073,7 @@ class MainWindow(QMainWindow):
 
         self.outliner = QTreeWidget()
         self.outliner.setUniformRowHeights(True)
+        self.outliner.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.outliner.itemClicked.connect(self._outliner_clicked)
 
         self.views = QTabWidget()
@@ -1077,6 +1108,33 @@ class MainWindow(QMainWindow):
             self.page_break_box.addItem(label, value)
         self.page_break_box.currentIndexChanged.connect(self._metadata_changed)
 
+        # Book anatomy (2.1): folders carry the compile settings (which
+        # template dresses them, where the cover is) and the flag that
+        # lifts them into the TEMPLATES area; chapters, scenes and notes
+        # pick the set slot that renders each of them.
+        self.templates_root_label = QLabel("Template area")
+        self.templates_root_box = QCheckBox(
+            "Templates folder — renders below the manuscript, "
+            "never exports as manuscript")
+        self.templates_root_box.toggled.connect(self._templates_root_toggled)
+        self.book_template_label = QLabel("Book template")
+        self.book_template_box = QComboBox()
+        self.book_template_box.currentIndexChanged.connect(
+            self._book_settings_changed)
+        self.cover_label = QLabel("Cover")
+        self.book_cover_edit = QLineEdit()
+        self.book_cover_edit.setPlaceholderText("Auto (images/…/cover.*)")
+        self.book_cover_edit.editingFinished.connect(self._book_settings_changed)
+        self.book_cover_button = QPushButton("Browse…")
+        self.book_cover_button.clicked.connect(self._browse_cover)
+        cover_row = QHBoxLayout()
+        cover_row.addWidget(self.book_cover_edit)
+        cover_row.addWidget(self.book_cover_button)
+        self.doc_template_label = QLabel("Document template")
+        self.doc_template_box = QComboBox()
+        self.doc_template_box.currentIndexChanged.connect(
+            self._doc_template_changed)
+
         # Metadata (1.12): the same Field/Type/Options/Value rows the Edit
         # Metadata dialog edits, inline and live — project-level fields on
         # folders/root, the document's own rows everywhere else.
@@ -1095,6 +1153,14 @@ class MainWindow(QMainWindow):
         inspector_layout.addWidget(self.target)
         inspector_layout.addWidget(QLabel("Page start"))
         inspector_layout.addWidget(self.page_break_box)
+        inspector_layout.addWidget(self.templates_root_label)
+        inspector_layout.addWidget(self.templates_root_box)
+        inspector_layout.addWidget(self.book_template_label)
+        inspector_layout.addWidget(self.book_template_box)
+        inspector_layout.addWidget(self.cover_label)
+        inspector_layout.addLayout(cover_row)
+        inspector_layout.addWidget(self.doc_template_label)
+        inspector_layout.addWidget(self.doc_template_box)
         inspector_layout.addWidget(QLabel("Metadata"))
         inspector_layout.addWidget(self.metadata_table)
         metadata_buttons = QHBoxLayout()
@@ -1241,6 +1307,11 @@ class MainWindow(QMainWindow):
         self.corkboard.setEnabled(enabled)
         self.synopsis.setEnabled(enabled)
         self.page_break_box.setEnabled(enabled)
+        self.templates_root_box.setEnabled(enabled)
+        self.book_template_box.setEnabled(enabled)
+        self.book_cover_edit.setEnabled(enabled)
+        self.book_cover_button.setEnabled(enabled)
+        self.doc_template_box.setEnabled(enabled)
         self.metadata_table.setEnabled(enabled)
         self.metadata_add_button.setEnabled(enabled)
         self.metadata_remove_button.setEnabled(enabled)
@@ -1297,6 +1368,7 @@ class MainWindow(QMainWindow):
         # project's own fields.
         self._populate_metadata_table()
         self._refresh_related()
+        self._refresh_book_widgets(self._current_document())
 
     def _restore_cursor(self) -> None:
         """Session resume (1.9): put the caret back where the last save left it.
@@ -1325,22 +1397,61 @@ class MainWindow(QMainWindow):
         self.tree.clear()
         items: dict[str, QTreeWidgetItem] = {}
         documents = self.project.documents()
-        pending = documents[:]
+        # The TEMPLATES area (2.1) renders below the manuscript wherever
+        # it sits: flagged roots are lifted to the bottom of the top
+        # level and their subtrees built in a second pass, so template
+        # pages never interrupt binder order around them.
+        in_template = template_side_ids(documents)
+        anchors = lifted_template_roots(documents, in_template)
+        self._lifted_roots = {d.id for d in anchors}
+
+        def make_item(document) -> QTreeWidgetItem:
+            item = QTreeWidgetItem([document.title])
+            item.setData(0, Qt.UserRole, document.id)
+            item.setData(0, Qt.UserRole + 1, document.kind)
+            item.setToolTip(0, document.kind.capitalize())
+            if document.kind == "folder":
+                item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
+            if document.id in in_template:
+                # Visual cue only: this subtree is template side.
+                font = item.font(0)
+                font.setItalic(True)
+                item.setFont(0, font)
+                if document.is_templates_root:
+                    item.setToolTip(
+                        0,
+                        "TEMPLATES — renders below the manuscript, "
+                        "never exports as manuscript",
+                    )
+            item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
+            return item
+
+        pending = [d for d in documents if d.id not in in_template]
         while pending:
             progressed = False
             for document in pending[:]:
                 if document.parent_id is None or document.parent_id in items:
-                    item = QTreeWidgetItem([document.title])
-                    item.setData(0, Qt.UserRole, document.id)
-                    item.setData(0, Qt.UserRole + 1, document.kind)
-                    item.setToolTip(0, document.kind.capitalize())
-                    if document.kind == "folder":
-                        item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
-                    item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
+                    item = make_item(document)
                     if document.parent_id:
                         items[document.parent_id].addChild(item)
                     else:
                         self.tree.addTopLevelItem(item)
+                    items[document.id] = item
+                    pending.remove(document)
+                    progressed = True
+            if not progressed:
+                break
+        for document in anchors:
+            item = make_item(document)
+            self.tree.addTopLevelItem(item)
+            items[document.id] = item
+        pending = [d for d in documents if d.id in in_template and d.id not in items]
+        while pending:
+            progressed = False
+            for document in pending[:]:
+                if document.parent_id in items:
+                    item = make_item(document)
+                    items[document.parent_id].addChild(item)
                     items[document.id] = item
                     pending.remove(document)
                     progressed = True
@@ -1386,7 +1497,17 @@ class MainWindow(QMainWindow):
         documents = self.project.documents()
         rollups = self.project.word_rollups()
         metadata = self.project.metadata_entries_all()
-        self._project_total = sum(d.word_count for d in documents)
+        in_template = template_side_ids(documents)
+        # The project's real word count skips the template area (2.1):
+        # front matter is not manuscript.
+        self._project_total = sum(
+            d.word_count for d in documents if d.id not in in_template
+        )
+        # Multi-select has to survive a refresh (2.1): remember the ids,
+        # reselect the new items carrying them after the rebuild.
+        keep_selected = {
+            item.data(0, Qt.UserRole) for item in self.outliner.selectedItems()
+        }
         column_ids = [c for c in self._outliner_column_ids()]
         labels = dict(self._available_outliner_columns(documents))
         self.outliner.setColumnCount(len(column_ids))
@@ -1400,7 +1521,7 @@ class MainWindow(QMainWindow):
         self.outliner.blockSignals(True)
         items: dict[str, QTreeWidgetItem] = {}
 
-        def add_row(document, parent_item=None):
+        def add_row(document, parent_item=None, template_side=False):
             cells = []
             for column_id in column_ids:
                 if column_id == "title":
@@ -1418,6 +1539,11 @@ class MainWindow(QMainWindow):
                     cells.append("")
             item = QTreeWidgetItem(cells)
             item.setData(0, Qt.UserRole, document.id)
+            if document.id in in_template:
+                # Visual cue only: template side renders below the rest.
+                font = item.font(0)
+                font.setItalic(True)
+                item.setFont(0, font)
             if document.id in has_children:
                 item.setText(0, document.title)
             for index, column_id in enumerate(column_ids):
@@ -1431,10 +1557,21 @@ class MainWindow(QMainWindow):
                 parent_item.addChild(item)
             items[document.id] = item
             for child in sorted(children.get(document.id, []), key=lambda d: d.position):
-                add_row(child, item)
+                # From a regular parent, a template-side child renders
+                # under the lifted root instead (2.1).
+                if child.id in in_template and not template_side:
+                    continue
+                add_row(child, item, template_side)
 
         for document in sorted(children.get(None, []), key=lambda d: d.position):
+            if document.id in in_template:
+                continue  # a parentless templates root: lifted below
             add_row(document)
+        for document in lifted_template_roots(documents, in_template):
+            add_row(document, None, template_side=True)
+        for document in documents:
+            if document.id in keep_selected and document.id in items:
+                items[document.id].setSelected(True)
         self.outliner.expandAll()
         self.outliner.blockSignals(False)
         self._sync_outliner_selection()
@@ -1446,7 +1583,11 @@ class MainWindow(QMainWindow):
             item = self._find_outliner_item(self.outliner.topLevelItem(index))
             if item and item.data(0, Qt.UserRole) == self.current_id:
                 self.outliner.blockSignals(True)
-                self.outliner.setCurrentItem(item)
+                # NoUpdate: move the current item without collapsing the
+                # multi-selection the export gathers (2.1).
+                self.outliner.setCurrentItem(
+                    item, 0, QItemSelectionModel.NoUpdate
+                )
                 self.outliner.blockSignals(False)
                 return
 
@@ -1591,6 +1732,7 @@ class MainWindow(QMainWindow):
             self.page_break_box.setCurrentIndex(
                 max(0, self.page_break_box.findData(document.page_break))
             )
+            self._refresh_book_widgets(document)
             if document.kind == "folder" and self.views.currentWidget() is self.editor:
                 self.views.setCurrentWidget(self.corkboard)
         else:
@@ -1598,6 +1740,7 @@ class MainWindow(QMainWindow):
             self.synopsis.clear()
             self.target.setValue(0)
             self.page_break_box.setCurrentIndex(0)
+            self._refresh_book_widgets(None)
         self._populate_metadata_table()
         self._refresh_related()
         self.loading = False
@@ -1630,6 +1773,112 @@ class MainWindow(QMainWindow):
         if kind is None:
             return None
         return PROJECT_METADATA_TARGET if kind == "folder" else self.current_id
+
+    def _current_document(self):
+        if not self.project or not self.current_id:
+            return None
+        return next(
+            (d for d in self.project.documents() if d.id == self.current_id),
+            None,
+        )
+
+    def _refresh_book_widgets(self, document) -> None:
+        """Show and fill the 2.1 sections for whatever is selected:
+        folder → TEMPLATES flag, book template, cover; chapter/scene/note
+        → the set slot that renders it; nothing selected → hide them all.
+
+        Called under loading, so every widget this sets never reads back
+        as an edit. Stored values the combos can no longer offer (a
+        deleted template or slot) fall back to the first entry on screen
+        and heal on the next actual change.
+        """
+        is_folder = bool(document and document.kind == "folder")
+        is_prose = bool(document and document.kind != "folder")
+        for widget in (
+            self.templates_root_label, self.templates_root_box,
+            self.book_template_label, self.book_template_box,
+            self.cover_label, self.book_cover_edit, self.book_cover_button,
+        ):
+            widget.setVisible(is_folder)
+        self.doc_template_label.setVisible(is_prose)
+        self.doc_template_box.setVisible(is_prose)
+        if not document or not self.project:
+            return
+        settings = self.project.book_settings(document.id) if is_folder else {}
+        self.book_template_box.blockSignals(True)
+        self.book_template_box.clear()
+        self.book_template_box.addItem("Automatic (match by name)", "")
+        for folder in self.project.template_folders():
+            self.book_template_box.addItem(folder.title, folder.id)
+        self.book_template_box.setCurrentIndex(
+            max(0, self.book_template_box.findData(settings.get("template", "")))
+        )
+        self.book_template_box.blockSignals(False)
+        self.templates_root_box.blockSignals(True)
+        self.templates_root_box.setChecked(document.is_templates_root)
+        self.templates_root_box.blockSignals(False)
+        self.book_cover_edit.setText(settings.get("cover", ""))
+        self.doc_template_box.blockSignals(True)
+        self.doc_template_box.clear()
+        self.doc_template_box.addItem("Default (set's own slot)", "")
+        names = list(TemplateSet.builtin().document_template_names())
+        for template_set in discover_template_sets(self.project.root):
+            for name in template_set.document_template_names():
+                if name not in names:
+                    names.append(name)
+        for name in names:
+            self.doc_template_box.addItem(name, name)
+        self.doc_template_box.setCurrentIndex(
+            max(0, self.doc_template_box.findData(document.doc_template or ""))
+        )
+        self.doc_template_box.blockSignals(False)
+
+    def _templates_root_toggled(self, checked: bool) -> None:
+        """Flag the folder and rebuild both trees so it lifts below the
+        manuscript (2.1). Immediate rather than debounced: it changes
+        where everything renders, and handling it here keeps the rebuild
+        out of save_current's selection-change path."""
+        if self.loading or not self.project or not self.current_id:
+            return
+        self.project.set_templates_root(self.current_id, checked)
+        self._reload_tree(select_id=self.current_id)
+        self._refresh_book_widgets(self._current_document())
+        self.statusBar().showMessage(
+            "Folder is now the templates area" if checked
+            else "Folder returned to the manuscript", 3000
+        )
+
+    def _book_settings_changed(self, *_args) -> None:
+        if self.loading or not self.project or not self.current_id:
+            return
+        document = self._current_document()
+        if not document or document.kind != "folder":
+            return
+        # Blanks remove the entry — the folder falls back to matching a
+        # template by name and auto-detecting images/<id>/cover.*.
+        self.project.set_book_settings(self.current_id, {
+            "template": self.book_template_box.currentData() or "",
+            "cover": self.book_cover_edit.text().strip(),
+        })
+
+    def _browse_cover(self) -> None:
+        if not self.project:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose cover image", str(self.project.root),
+            "Images (*.png *.jpg *.jpeg *.webp *.gif)",
+        )
+        if path:
+            self.book_cover_edit.setText(path)
+            self._book_settings_changed()
+
+    def _doc_template_changed(self, *_args) -> None:
+        if self.loading or not self.project or not self.current_id:
+            return
+        self.project.update_document(
+            self.current_id,
+            doc_template=self.doc_template_box.currentData() or "",
+        )
 
     def _populate_metadata_table(self) -> None:
         """Point the inspector's metadata section at the current selection.
@@ -1807,7 +2056,12 @@ class MainWindow(QMainWindow):
             parent_id = None if parent_item is None else parent_item.data(0, Qt.UserRole)
             for position in range(count):
                 item = self.tree.topLevelItem(position) if parent_item is None else parent_item.child(position)
-                self.project.reorder(item.data(0, Qt.UserRole), parent_id, position)
+                document_id = item.data(0, Qt.UserRole)
+                # Lifted templates roots are display-only at the bottom
+                # of the top level; their storage parent stays put (2.1).
+                if document_id in self._lifted_roots:
+                    continue
+                self.project.reorder(document_id, parent_id, position)
 
     def _all_items(self) -> list[QTreeWidgetItem]:
         result = []
@@ -2063,18 +2317,15 @@ class MainWindow(QMainWindow):
         if not self.project:
             return
         self.save_current()
-        documents = [
-            item for item in self.project.ordered_documents()
-            if item.kind in EXPORT_KINDS
-        ]
+        # Raw scope from both trees (2.1): folders expand and book
+        # chrome fires at compile time; None means the whole project.
+        raw_ids = self._gather_export_selection()
         template_sets = discover_template_sets(self.project.root)
         current_set = self.project.get_setting("template_set", "default")
-        options = ExportOptionsDialog(documents, template_sets, current_set, self)
+        options = ExportOptionsDialog(
+            self._export_summary(raw_ids), template_sets, current_set, self
+        )
         if options.exec() != QDialog.Accepted:
-            return
-        selected_ids = options.selected_ids()
-        if not selected_ids:
-            QMessageBox.warning(self, "Nothing selected", "Select at least one chapter or scene.")
             return
         templates = options.selected_template_set()
         self.project.set_setting("template_set", templates.name)
@@ -2083,16 +2334,42 @@ class MainWindow(QMainWindow):
         if selected:
             try:
                 if kind == "text":
-                    self.project.export_text(Path(selected), selected_ids, templates)
+                    self.project.export_text(Path(selected), raw_ids, templates)
                 elif kind == "html":
-                    self.project.export_html(Path(selected), selected_ids, templates)
+                    self.project.export_html(Path(selected), raw_ids, templates)
                 elif kind == "docx":
-                    self.project.export_docx(Path(selected), selected_ids, templates)
+                    self.project.export_docx(Path(selected), raw_ids, templates)
                 else:
-                    self.project.export_epub(Path(selected), selected_ids, templates)
+                    self.project.export_epub(Path(selected), raw_ids, templates)
                 self.statusBar().showMessage(f"Exported to {selected}", 5000)
             except Exception as error:
                 QMessageBox.critical(self, "Export failed", str(error))
+
+    def _gather_export_selection(self) -> set[str] | None:
+        """Raw export scope (2.1): the union of the binder's and the
+        outliner's selections, or None — the whole project — when
+        nothing is selected anywhere."""
+        ids: set[str] = set()
+        for widget in (self.tree, self.outliner):
+            for item in widget.selectedItems():
+                value = item.data(0, Qt.UserRole)
+                if value:
+                    ids.add(value)
+        return ids or None
+
+    def _export_summary(self, raw_ids: set[str] | None) -> str:
+        """One scope line for the export dialog."""
+        if raw_ids is None:
+            count = sum(
+                1 for d in self.project.documents() if d.kind in EXPORT_KINDS
+            )
+            return f"Whole project — every chapter and scene ({count})."
+        documents = {d.id: d for d in self.project.documents()}
+        titles = [documents[i].title for i in raw_ids if i in documents][:5]
+        more = len(raw_ids) - len(titles)
+        if more > 0:
+            titles.append(f"+{more} more")
+        return f"Selection — {len(raw_ids)} item(s): {', '.join(titles)}"
 
     def import_scrivener_dump(self) -> None:
         """Import every book in a dump into the open project (2.3).
