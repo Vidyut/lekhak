@@ -185,6 +185,29 @@ class WordCountTests(unittest.TestCase):
         self.project.open()
         self.assertEqual(self.project.documents()[0].word_count, 4)
 
+    def test_word_rollups_sum_descendants(self):
+        draft = self.project.documents()[0]
+        chapter = self.project.add_document("Chapter", draft.id, "chapter")
+        scene_a = self.project.add_document("A", chapter.id, "scene")
+        scene_b = self.project.add_document("B", chapter.id, "scene")
+        self.project.write_content(scene_a.id, "<p>one two</p>")
+        self.project.write_content(scene_b.id, "<p>one two three four</p>")
+        rollups = self.project.word_rollups()
+        self.assertEqual(rollups[scene_a.id], 2)
+        self.assertEqual(rollups[chapter.id], 6)
+        self.assertEqual(rollups[draft.id], 6)
+
+    def test_metadata_entries_all_matches_per_document_reads(self):
+        draft = self.project.documents()[0]
+        chapter = self.project.add_document("Chapter", draft.id, "chapter")
+        self.project.set_metadata(draft.id, {"POV": "Maya"})
+        self.project.set_metadata(chapter.id, {"Status": "Draft"}, {"Status": "choice"},
+                                  {"Status": ["Draft", "Final"]})
+        everything = self.project.metadata_entries_all()
+        self.assertEqual(everything[draft.id], self.project.metadata_entries(draft.id))
+        self.assertEqual(everything[chapter.id], self.project.metadata_entries(chapter.id))
+        self.assertEqual(self.project.metadata_keys(), ["POV", "Status"])
+
 
 if __name__ == "__main__":
     unittest.main()

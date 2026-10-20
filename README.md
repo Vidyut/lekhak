@@ -10,6 +10,9 @@ transparent, recoverable, and designed around ordinary files.
   nesting is unlimited; chapter/scene/note are labels, not structure
 - Explicit folder, chapter and scene creation actions that land relative to
   the selection
+- Outliner view: hierarchical table with Title, Kind, Words, Target and
+  user-chosen metadata columns; column picker persisted per project;
+  rollup word counts on containers
 - Corkboard cards linked to binder structure and synopses
 - Rich-text editor and synopsis inspector
 - Paragraph styles, font controls, alignment, lists, and clear formatting

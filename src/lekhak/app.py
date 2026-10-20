@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -295,6 +296,43 @@ class ExportOptionsDialog(QDialog):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
 
 
+class ColumnPickerDialog(QDialog):
+    """Choose which columns the outliner shows: built-ins plus any metadata
+    key used in the project."""
+
+    def __init__(self, available: list[tuple[str, str]], selected: list[str],
+                 parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Outliner Columns")
+        self.resize(360, 420)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Show these columns (Title is always shown):"))
+        self.columns = QListWidget()
+        for column_id, label in available:
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, column_id)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if column_id in selected else Qt.Unchecked)
+            if column_id == "title":
+                item.setCheckState(Qt.Checked)
+                item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+            self.columns.addItem(item)
+        layout.addWidget(self.columns)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_columns(self) -> list[str]:
+        chosen = ["title"]
+        for index in range(self.columns.count()):
+            item = self.columns.item(index)
+            column_id = item.data(Qt.UserRole)
+            if column_id != "title" and item.checkState() == Qt.Checked:
+                chosen.append(column_id)
+        return chosen
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -302,6 +340,7 @@ class MainWindow(QMainWindow):
         self.current_id: str | None = None
         self.loading = False
         self.focus_mode = False
+        self._project_total = 0
         self.setWindowTitle("Lekhak")
         self.resize(1280, 820)
 
@@ -316,6 +355,7 @@ class MainWindow(QMainWindow):
         self.editor.setAcceptRichText(True)
         self.editor.setPlaceholderText("Start writing…")
         self.editor.textChanged.connect(self._content_changed)
+        self.editor.cursorPositionChanged.connect(self._update_word_count)
 
         self.corkboard = QListWidget()
         self.corkboard.setViewMode(QListWidget.IconMode)
@@ -325,10 +365,17 @@ class MainWindow(QMainWindow):
         self.corkboard.setGridSize(QSize(220, 150))
         self.corkboard.itemDoubleClicked.connect(self._open_card)
 
+        self.outliner = QTreeWidget()
+        self.outliner.setUniformRowHeights(True)
+        self.outliner.itemClicked.connect(self._outliner_clicked)
+
         self.views = QTabWidget()
         self.views.addTab(self.editor, "Editor")
         self.views.addTab(self.corkboard, "Corkboard")
+        self.views.addTab(self.outliner, "Outliner")
         self.views.currentChanged.connect(lambda _index: self._refresh_corkboard())
+        self.views.currentChanged.connect(
+            lambda index: self._refresh_outliner() if self.views.widget(index) is self.outliner else None)
 
         self.synopsis = QPlainTextEdit()
         self.synopsis.setPlaceholderText("Synopsis…")
@@ -431,6 +478,7 @@ class MainWindow(QMainWindow):
 
         document_menu = self.menuBar().addMenu("&Document")
         self._action(document_menu, "Edit Metadata…", None, self.edit_metadata)
+        self._action(document_menu, "Outliner Columns…", None, self.pick_outliner_columns)
         self._action(document_menu, "Create Snapshot…", None, self.create_snapshot)
         self._action(document_menu, "Restore Snapshot…", None, self.restore_snapshot)
 
@@ -517,6 +565,134 @@ class MainWindow(QMainWindow):
         self.loading = False
         if select_id and select_id in items:
             self.tree.setCurrentItem(items[select_id])
+        self._refresh_outliner()
+
+    def _outliner_column_ids(self) -> list[str]:
+        if not self.project:
+            return ["title", "kind", "words", "target"]
+        raw = self.project.get_setting("outliner_columns")
+        if not raw:
+            return ["title", "kind", "words", "target"]
+        try:
+            columns = json.loads(raw)
+        except ValueError:
+            return ["title", "kind", "words", "target"]
+        return columns if isinstance(columns, list) and "title" in columns else ["title", "kind", "words", "target"]
+
+    def _available_outliner_columns(self, documents) -> list[tuple[str, str]]:
+        builtins = [
+            ("title", "Title"),
+            ("kind", "Kind"),
+            ("words", "Words"),
+            ("target", "Target"),
+        ]
+        if not self.project:
+            return builtins
+        children = {d.id for d in documents if d.parent_id}
+        metadata = [
+            (f"meta:{key}", key) for key in self.project.metadata_keys()
+        ]
+        return builtins + metadata
+
+    def _refresh_outliner(self) -> None:
+        if not self.project:
+            self.outliner.clear()
+            return
+        documents = self.project.documents()
+        rollups = self.project.word_rollups()
+        metadata = self.project.metadata_entries_all()
+        self._project_total = sum(d.word_count for d in documents)
+        column_ids = [c for c in self._outliner_column_ids()]
+        labels = dict(self._available_outliner_columns(documents))
+        self.outliner.setColumnCount(len(column_ids))
+        self.outliner.setHeaderLabels([labels.get(c, c) for c in column_ids])
+        self.outliner.clear()
+        children: dict[str | None, list] = {}
+        for document in documents:
+            children.setdefault(document.parent_id, []).append(document)
+        has_children = {d.id for d in documents if children.get(d.id)}
+
+        self.outliner.blockSignals(True)
+        items: dict[str, QTreeWidgetItem] = {}
+
+        def add_row(document, parent_item=None):
+            cells = []
+            for column_id in column_ids:
+                if column_id == "title":
+                    cells.append(document.title)
+                elif column_id == "kind":
+                    cells.append(document.kind.capitalize())
+                elif column_id == "words":
+                    cells.append(f"{rollups.get(document.id, document.word_count):,}")
+                elif column_id == "target":
+                    cells.append(f"{document.word_target:,}" if document.word_target else "")
+                elif column_id.startswith("meta:"):
+                    key = column_id[5:]
+                    cells.append(metadata.get(document.id, {}).get(key, ("", "", []))[0])
+                else:
+                    cells.append("")
+            item = QTreeWidgetItem(cells)
+            item.setData(0, Qt.UserRole, document.id)
+            if document.id in has_children:
+                item.setText(0, document.title)
+            for index, column_id in enumerate(column_ids):
+                if column_id == "words":
+                    own = f"{document.word_count:,} own"
+                    total = f"{rollups.get(document.id, document.word_count):,} total"
+                    item.setToolTip(index, f"{own} ({total})" if document.id in has_children else own)
+            if parent_item is None:
+                self.outliner.addTopLevelItem(item)
+            else:
+                parent_item.addChild(item)
+            items[document.id] = item
+            for child in sorted(children.get(document.id, []), key=lambda d: d.position):
+                add_row(child, item)
+
+        for document in sorted(children.get(None, []), key=lambda d: d.position):
+            add_row(document)
+        self.outliner.expandAll()
+        self.outliner.blockSignals(False)
+        self._sync_outliner_selection()
+
+    def _sync_outliner_selection(self) -> None:
+        if not self.current_id:
+            return
+        for index in range(self.outliner.topLevelItemCount()):
+            item = self._find_outliner_item(self.outliner.topLevelItem(index))
+            if item and item.data(0, Qt.UserRole) == self.current_id:
+                self.outliner.blockSignals(True)
+                self.outliner.setCurrentItem(item)
+                self.outliner.blockSignals(False)
+                return
+
+    def _find_outliner_item(self, item):
+        if item.data(0, Qt.UserRole) == self.current_id:
+            return item
+        for index in range(item.childCount()):
+            found = self._find_outliner_item(item.child(index))
+            if found:
+                return found
+        return None
+
+    def _outliner_clicked(self, item, _column) -> None:
+        document_id = item.data(0, Qt.UserRole)
+        for tree_item in self._all_items():
+            if tree_item.data(0, Qt.UserRole) == document_id:
+                self.tree.setCurrentItem(tree_item)
+                return
+
+    def pick_outliner_columns(self) -> None:
+        if not self.project:
+            return
+        documents = self.project.documents()
+        available = self._available_outliner_columns(documents)
+        current = self._outliner_column_ids()
+        dialog = ColumnPickerDialog(available, current, self)
+        if dialog.exec() == QDialog.Accepted:
+            self.project.set_setting(
+                "outliner_columns", json.dumps(dialog.selected_columns())
+            )
+            self._refresh_outliner()
 
     def _selection_changed(self, current, previous) -> None:
         if self.loading:
@@ -538,6 +714,7 @@ class MainWindow(QMainWindow):
         self.loading = False
         self._update_word_count()
         self._refresh_corkboard()
+        self._sync_outliner_selection()
 
     def _content_changed(self) -> None:
         if not self.loading:
@@ -560,6 +737,7 @@ class MainWindow(QMainWindow):
                 word_target=self.target.value(),
             )
             self.statusBar().showMessage("Saved", 1500)
+            self._refresh_outliner()
         except Exception as error:
             QMessageBox.critical(self, "Save failed", str(error))
 
@@ -602,6 +780,7 @@ class MainWindow(QMainWindow):
         item.setText(0, title)
         self.project.update_document(document_id, title=title)
         self._refresh_corkboard()
+        self._refresh_outliner()
 
     def _tree_moved(self, *args) -> None:
         if self.loading or not self.project:
@@ -636,7 +815,13 @@ class MainWindow(QMainWindow):
             cards = [d for d in documents if d.parent_id == parent_id]
         for document in sorted(cards, key=lambda item: item.position):
             synopsis = document.synopsis.strip() or "No synopsis"
-            card = QListWidgetItem(f"{document.title}\n\n{synopsis}")
+            progress = ""
+            if document.word_target:
+                percent = min(100, round(document.word_count * 100 / document.word_target))
+                progress = f"\n{document.word_count:,} / {document.word_target:,} ({percent}%)"
+            elif document.word_count:
+                progress = f"\n{document.word_count:,} words"
+            card = QListWidgetItem(f"{document.title}\n\n{synopsis}{progress}")
             card.setData(Qt.UserRole, document.id)
             card.setTextAlignment(Qt.AlignLeft | Qt.AlignTop)
             card.setSizeHint(QSize(200, 130))
@@ -737,6 +922,7 @@ class MainWindow(QMainWindow):
             values, value_types, options = dialog.values_types_options()
             self.project.set_metadata(self.current_id, values, value_types, options)
             self.statusBar().showMessage("Metadata saved", 2000)
+            self._refresh_outliner()
 
     def restore_snapshot(self) -> None:
         if not self.project or not self.current_id:
@@ -877,11 +1063,19 @@ class MainWindow(QMainWindow):
     def _update_word_count(self) -> None:
         words = len(self.editor.toPlainText().split())
         target = self.target.value()
+        cursor = self.editor.textCursor()
+        parts = []
         if target:
             percent = min(100, round(words * 100 / target))
-            self.statusBar().showMessage(f"{words:,} / {target:,} words ({percent}%)")
+            parts.append(f"{words:,} / {target:,} words ({percent}%)")
         else:
-            self.statusBar().showMessage(f"{words:,} words")
+            parts.append(f"{words:,} words")
+        if cursor.hasSelection():
+            selected = len(cursor.selectedText().split())
+            parts.append(f"{selected:,} selected")
+        if self._project_total:
+            parts.append(f"{self._project_total:,} in project")
+        self.statusBar().showMessage(" · ".join(parts))
 
     def closeEvent(self, event) -> None:
         self.save_current()

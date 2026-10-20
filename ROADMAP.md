@@ -3,7 +3,7 @@
 Feedback and feature requests, triaged against the current MVP. Ordered by
 foundational importance, not by glamour. Items reference the code they touch.
 
-## Phase 0 — foundations (in progress)
+## Phase 0 — foundations (DONE)
 
 ### 0.1 Binder rework: neutral folders, parallel roots — DONE
 **Request:** "better binder — only one top level folder; Chapter/scene format
@@ -71,24 +71,26 @@ their own. EPUB emits one page per unit. DOCX keeps structural headings
 (header slots do not apply there). Word counts are cached on the document
 row at save time, with a one-time backfill for older projects.
 
-### 1.3 Word counts everywhere
+### 1.3 Word counts everywhere — DONE
 **Request:** counts for scenes, outliner, selected text, selected
 chapters/scenes, running totals.
-**Now:** current-document count only (`app.py:814`), plus `{word_count}`
-inside a template.
-**Add:** cached counts on the document row (updated on save, not on every
-keystroke); outliner column with per-item and rollup counts; selection count
-in the status bar; project total; per-target progress in the corkboard card.
+**Implemented (2026-10-20):** `word_count` cached on the document row at
+save time with a one-time backfill; `Project.word_rollups()` sums
+descendants for container rows; the outliner shows per-item and rollup
+counts (own vs total in the tooltip); the status bar shows the current
+document, target progress, selected-text count, and the project total;
+corkboard cards show count and target progress.
 
-### 1.3a Outliner view with user-chosen columns
+### 1.3a Outliner view with user-chosen columns — DONE
 **Request:** add/remove metadata columns in the outliner view.
-**Now:** no outliner exists; the binder tree shows titles only.
-**Add:** a fourth view — a table of binder items in binder order, with
-columns for title, kind, word count, target, and any metadata key. A column
-picker (checkbox list of project-wide metadata keys, plus the built-ins)
-adds or removes columns; the choice is stored per project in settings so it
-survives reopening. Clicking a row selects that document in the binder.
-Rollup counts appear on folder/chapter rows (sum of descendants).
+**Implemented (2026-10-20):** a third central view — a hierarchical table of
+the binder in binder order. Columns: Title (always on), Kind, Words,
+Target, plus any metadata key used in the project. The picker
+(Document → Outliner Columns…) checks columns on and off; the choice is
+stored in project settings and survives reopening. Clicking a row selects
+that document in the binder; binder selection highlights the row. Word
+cells on containers are rollups of everything beneath them. Metadata is
+read with one batched query per refresh.
 
 ### 1.4 Split and merge scenes
 **Request:** split a scene at the cursor into two; merge a scene with its

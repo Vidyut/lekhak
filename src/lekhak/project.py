@@ -346,12 +346,51 @@ class Project:
         ).fetchall()
         return {row[0]: row[1] for row in rows}
 
+    def metadata_keys(self) -> list[str]:
+        """Every metadata key used anywhere in the project, sorted."""
+        rows = self.db.execute(
+            "SELECT DISTINCT key FROM document_metadata ORDER BY key"
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def word_rollups(self) -> dict[str, int]:
+        """Word count per document, containers summing all descendants."""
+        documents = self.documents()
+        by_id = {d.id: d for d in documents}
+        children: dict[str | None, list[str]] = {}
+        for document in documents:
+            children.setdefault(document.parent_id, []).append(document.id)
+        rollup: dict[str, int] = {}
+
+        def visit(document_id: str) -> int:
+            total = by_id[document_id].word_count
+            for child_id in children.get(document_id, []):
+                total += visit(child_id)
+            rollup[document_id] = total
+            return total
+
+        for document in documents:
+            if document.id not in rollup:
+                visit(document.id)
+        return rollup
+
     def metadata_entries(self, document_id: str) -> dict[str, tuple[str, str, list[str]]]:
         rows = self.db.execute(
             "SELECT key,value,value_type,options_json FROM document_metadata "
             "WHERE document_id=? ORDER BY key", (document_id,),
         ).fetchall()
         return {row[0]: (row[1], row[2], json.loads(row[3])) for row in rows}
+
+    def metadata_entries_all(self) -> dict[str, dict[str, tuple[str, str, list[str]]]]:
+        """Every document's metadata in one query, keyed by document id."""
+        rows = self.db.execute(
+            "SELECT document_id,key,value,value_type,options_json "
+            "FROM document_metadata ORDER BY document_id,key"
+        ).fetchall()
+        result: dict[str, dict[str, tuple[str, str, list[str]]]] = {}
+        for row in rows:
+            result.setdefault(row[0], {})[row[1]] = (row[2], row[3], json.loads(row[4]))
+        return result
 
     def set_metadata(self, document_id: str, values: dict[str, str],
                      value_types: dict[str, str] | None = None,
