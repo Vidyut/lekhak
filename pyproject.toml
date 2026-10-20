@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lekhak"
+version = "0.1.0"
+description = "A reliable, Linux-first environment for long-form writing"
+requires-python = ">=3.11"
+dependencies = ["PySide6>=6.6", "python-docx>=1.1"]
+
+[project.scripts]
+lekhak = "lekhak.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
