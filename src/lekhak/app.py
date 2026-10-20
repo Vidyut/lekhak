@@ -41,7 +41,8 @@ from pathlib import Path
 from PySide6.QtCore import QDate, QSize, QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction, QDesktopServices, QFont, QKeySequence, QTextBlockFormat,
-    QTextCharFormat, QTextCursor, QTextDocumentFragment, QTextListFormat,
+    QTextCharFormat, QTextCursor, QTextDocument, QTextDocumentFragment,
+    QTextFormat, QTextListFormat,
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
@@ -225,7 +226,7 @@ class ProjectReplaceDialog(QDialog):
 
 
 class PreferencesDialog(QDialog):
-    def __init__(self, font_size: int, parent=None) -> None:
+    def __init__(self, font_size: int, paste: dict[str, bool], parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Preferences")
         layout = QVBoxLayout(self)
@@ -242,6 +243,30 @@ class PreferencesDialog(QDialog):
         )
         note.setWordWrap(True)
         layout.addWidget(note)
+
+        layout.addWidget(QLabel("When pasting, keep:"))
+        self.paste_fonts = QCheckBox("Fonts and colours")
+        self.paste_paragraphs = QCheckBox(
+            "Paragraph formatting — indents, line spacing, margins, "
+            "blank-line structure"
+        )
+        self.paste_inline = QCheckBox("Bold, italics and underline")
+        self.paste_alignment = QCheckBox("Alignment")
+        self.paste_fonts.setChecked(paste["fonts"])
+        self.paste_paragraphs.setChecked(paste["paragraphs"])
+        self.paste_inline.setChecked(paste["inline"])
+        self.paste_alignment.setChecked(paste["alignment"])
+        for box in (self.paste_fonts, self.paste_paragraphs,
+                    self.paste_inline, self.paste_alignment):
+            layout.addWidget(box)
+        paste_note = QLabel(
+            "Unchecked items are stripped when you paste. Ctrl+Shift+V "
+            "always pastes as plain text, and Edit → Paste and Keep "
+            "All Formatting ignores every box."
+        )
+        paste_note.setWordWrap(True)
+        layout.addWidget(paste_note)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
         )
@@ -500,14 +525,278 @@ class ColumnPickerDialog(QDialog):
         return chosen
 
 
+def load_paste_prefs() -> dict[str, bool]:
+    """The paste policy from Preferences, read on every paste.
+
+    Read live rather than cached, so ticking a box takes effect on the
+    very next paste with no restart.
+    """
+    settings = QSettings()
+    return {
+        "fonts": settings.value("paste/fonts", False, type=bool),
+        "paragraphs": settings.value("paste/paragraphs", False, type=bool),
+        "inline": settings.value("paste/inline", True, type=bool),
+        "alignment": settings.value("paste/alignment", True, type=bool),
+    }
+
+
+def _scrub_char_format(source: QTextCharFormat, keep_fonts: bool,
+                       keep_inline: bool) -> QTextCharFormat:
+    """Rebuild one fragment's format holding only what the policy keeps.
+
+    Rebuilt from a fresh format instead of deleting properties: a fresh
+    QTextCharFormat already carries exactly the editor's defaults, and it
+    sidesteps the property enums PySide6 doesn't expose by name. Image
+    objects come back untouched — their format *is* the image, so a
+    filtered copy would leave a missing-glyph box. Anchors ride along
+    whatever the flags say: a link is content, not skin.
+    """
+    if source.objectType() != QTextFormat.NoObject:
+        return source
+    result = QTextCharFormat()
+    if keep_inline:
+        result.setFontWeight(source.fontWeight())
+        result.setFontItalic(source.fontItalic())
+        result.setFontUnderline(source.fontUnderline())
+    if keep_fonts:
+        families = source.fontFamilies()
+        if families:
+            result.setFontFamilies(families)
+        if source.fontPointSize() > 0:
+            result.setFontPointSize(source.fontPointSize())
+        foreground = source.foreground()
+        if foreground.style() != Qt.BrushStyle.NoBrush:
+            result.setForeground(foreground)
+        background = source.background()
+        if background.style() != Qt.BrushStyle.NoBrush:
+            result.setBackground(background)
+    if source.isAnchor():
+        result.setAnchor(True)
+        href = source.anchorHref()
+        if href:
+            result.setAnchorHref(href)
+    return result
+
+
+def _scrub_block_format(source: QTextBlockFormat, keep_paragraphs: bool,
+                        keep_alignment: bool) -> QTextBlockFormat:
+    """Rebuild one block's format: editor defaults plus only what's kept.
+
+    The fresh format *is* the default policy — a Word document's 72 pt
+    "before paragraph" margin and its line height are what make a paste
+    land at double height, and they all live on the block format.
+    """
+    result = QTextBlockFormat()
+    if keep_alignment:
+        alignment = source.alignment()
+        if int(alignment):
+            result.setAlignment(alignment)
+    if keep_paragraphs:
+        result.setTopMargin(source.topMargin())
+        result.setBottomMargin(source.bottomMargin())
+        result.setLeftMargin(source.leftMargin())
+        result.setRightMargin(source.rightMargin())
+        result.setIndent(source.indent())
+        result.setTextIndent(source.textIndent())
+        line_height = source.lineHeight()
+        if line_height > 0:
+            result.setLineHeight(line_height, source.lineHeightType())
+    return result
+
+
+def sanitize_pasted_html(html: str, *, fonts: bool, paragraphs: bool,
+                         inline: bool, alignment: bool) -> QTextDocument:
+    """Turn clipboard HTML into a scratch document that obeys the paste policy.
+
+    Why: clipboard HTML drags its source application along — font families
+    and sizes, indents, line spacing, block margins, blank-paragraph
+    scaffolding — and lands in the manuscript as visual chaos. The pass:
+
+        html ── setHtml ──▶ scratch document
+              ── read ──▶ record every fragment (start, length, scrubbed
+                          format) and every block (start, source format)
+              ── apply ──▶ write the recorded formats back. Read first,
+                          edit second: editing invalidates QTextBlock
+                          handles, so the records hold plain integers and
+                          implicitly-shared format copies.
+              ── collapse ──▶ (unless paragraphs are kept) delete
+                          blank-paragraph runs — leading and trailing runs
+                          vanish, interior runs shrink to one blank line
+
+    Object fragments (images) pass through with their format intact and
+    never count as blank. QMimeData.html() decodes exactly what Qt's own
+    paste path decodes, so there is no charset handling to redo.
+    """
+    document = QTextDocument()
+    document.setHtml(html)
+    character_ops: list[tuple[int, int, QTextCharFormat]] = []
+    block_ops: list[tuple[int, QTextBlockFormat]] = []
+    blank: list[bool] = []
+    block = document.firstBlock()
+    while block.isValid():
+        block_ops.append((block.position(), block.blockFormat()))
+        has_object = False
+        fragment = block.begin()
+        while not fragment.atEnd():
+            item = fragment.fragment()
+            if item.charFormat().objectType() != QTextFormat.NoObject:
+                has_object = True
+            else:
+                character_ops.append(
+                    (item.position(), item.length(),
+                     _scrub_char_format(item.charFormat(), fonts, inline)))
+            fragment += 1
+        text = block.text()
+        blank.append(not has_object and not text.replace("\u2028", "").strip())
+        block = block.next()
+    cursor = QTextCursor(document)
+    cursor.beginEditBlock()
+    for position, length, char_format in character_ops:
+        cursor.setPosition(position)
+        cursor.setPosition(position + length, QTextCursor.KeepAnchor)
+        cursor.setCharFormat(char_format)
+    for position, source_format in block_ops:
+        cursor.setPosition(position)
+        cursor.setBlockFormat(
+            _scrub_block_format(source_format, paragraphs, alignment))
+    cursor.endEditBlock()
+    if not paragraphs:
+        _collapse_blank_blocks(document, blank)
+    return document
+
+
+def _collapse_blank_blocks(document: QTextDocument, blank: list[bool]) -> None:
+    """Delete blank-paragraph noise from the scratch document.
+
+    A leading run of blanks (with real text after it) goes entirely, a
+    trailing run goes entirely, an interior run shrinks to one blank line,
+    and an all-blank document is left whole. Deletions run back to front
+    and re-walk the live document each step: blocks before the one being
+    cut never move, while the block *after* a cut is read fresh — by the
+    time a trailing run is half-eaten its last survivor really is the tail,
+    which is exactly when the separator in front of it has to go.
+    """
+    count = len(blank)
+    if count < 2 or not any(blank) or all(blank):
+        return
+    doomed: list[int] = []
+    index = 0
+    while index < count:
+        if not blank[index]:
+            index += 1
+            continue
+        end = index
+        while end < count and blank[end]:
+            end += 1
+        if index == 0 or end == count:
+            # Leading run (real text follows) or trailing run: all of it.
+            doomed.extend(range(index, end))
+        else:
+            # Interior run: keep one blank line between the paragraphs.
+            doomed.extend(range(index + 1, end))
+        index = end
+    cursor = QTextCursor(document)
+    cursor.beginEditBlock()
+    for index in sorted(doomed, reverse=True):
+        block = document.findBlockByNumber(index)
+        following = block.next()
+        if following.isValid():
+            cursor.setPosition(block.position())
+            cursor.setPosition(following.position(), QTextCursor.KeepAnchor)
+        else:
+            # Tail block: swallow the separator in front, or the emptied
+            # block would survive as the new tail.
+            cursor.setPosition(block.position() - 1)
+            cursor.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
+        cursor.removeSelectedText()
+    cursor.endEditBlock()
+
+
 class LinkEditor(QTextEdit):
-    """QTextEdit that reports internal `lekhak://` anchor clicks.
+    """QTextEdit that reports internal `lekhak://` anchor clicks and puts
+    pasted HTML through the paste policy.
 
     Plain QTextEdit has no link-click support (that is QTextBrowser's API),
-    so a click on an anchor is turned into a signal here instead.
+    so a click on an anchor is turned into a signal here instead, and its
+    raw HTML import is replaced: Qt would happily paste a Word document's
+    fonts and margins straight into the manuscript.
     """
 
     internal_link_clicked = Signal(str)
+
+    def insertFromMimeData(self, source) -> None:
+        """Paste under the Preferences policy; let Qt handle the rest.
+
+        Clipboard HTML goes through `sanitize_pasted_html`; plain text,
+        images and anything carrying no HTML fall through to Qt's own
+        import, which is already correct for them.
+        """
+        if source is None:
+            return
+        html = source.html() if source.hasHtml() else ""
+        if not html:
+            super().insertFromMimeData(source)
+            return
+        prefs = load_paste_prefs()
+        self._insert_scratch(sanitize_pasted_html(
+            html,
+            fonts=prefs["fonts"],
+            paragraphs=prefs["paragraphs"],
+            inline=prefs["inline"],
+            alignment=prefs["alignment"],
+        ))
+
+    def paste_as_plain_text(self) -> None:
+        """Ctrl+Shift+V: take only the clipboard's text, never its format.
+
+        QTextEdit exposes no plain-paste entry of its own, and this is
+        what the shortcut has always meant: the words, in whatever
+        formatting already surrounds the caret. Quirky sources can ship
+        HTML with no text/plain twin — the words are still recoverable,
+        and plain paste has to stay plain even then.
+        """
+        source = QApplication.clipboard().mimeData()
+        if source is None:
+            return
+        text = source.text()
+        if not text and source.hasHtml():
+            scratch = QTextDocument()
+            scratch.setHtml(source.html())
+            text = scratch.toPlainText()
+        if not text:
+            self.paste()  # images and other non-text take the normal path
+            return
+        self.insertPlainText(text)
+
+    def paste_keep_all(self) -> None:
+        """Paste keeping everything — fonts, spacing, colours, alignment.
+
+        The deliberate escape hatch (feeds 1.11): when a passage is pasted
+        *for* its formatting, the policy must not touch it. No HTML means
+        there is nothing to keep, so the regular paste path runs instead.
+        """
+        source = QApplication.clipboard().mimeData()
+        html = source.html() if source is not None and source.hasHtml() else ""
+        if not html:
+            self.paste()
+            return
+        document = QTextDocument()
+        document.setHtml(html)
+        self._insert_scratch(document)
+
+    def _insert_scratch(self, document: QTextDocument) -> None:
+        """Drop a prepared scratch document in at the caret.
+
+        insertFragment only moves the cursor it is given, never the
+        widget's own, so the caret is handed back explicitly — otherwise
+        typing would carry on at the pre-paste spot. One edit block keeps
+        the whole paste a single undo step.
+        """
+        cursor = self.textCursor()
+        cursor.beginEditBlock()
+        cursor.insertFragment(QTextDocumentFragment(document))
+        cursor.endEditBlock()
+        self.setTextCursor(cursor)
 
     def mousePressEvent(self, event) -> None:
         anchor = self.anchorAt(event.position().toPoint())
@@ -659,6 +948,14 @@ class MainWindow(QMainWindow):
         edit_menu = self.menuBar().addMenu("&Edit")
         self._action(edit_menu, "Undo", QKeySequence.Undo, self.editor.undo)
         self._action(edit_menu, "Redo", QKeySequence.Redo, self.editor.redo)
+        edit_menu.addSeparator()
+        self._action(edit_menu, "Cut", QKeySequence.Cut, self.editor.cut)
+        self._action(edit_menu, "Copy", QKeySequence.Copy, self.editor.copy)
+        self._action(edit_menu, "Paste", QKeySequence.Paste, self.editor.paste)
+        self._action(edit_menu, "Paste as Plain Text", "Ctrl+Shift+V",
+                     self.editor.paste_as_plain_text)
+        self._action(edit_menu, "Paste and Keep All Formatting", None,
+                     self.editor.paste_keep_all)
         edit_menu.addSeparator()
         self._action(edit_menu, "Find / Replace in Section…", QKeySequence.Find, self.find_replace)
         self._action(edit_menu, "Find in Project", "Ctrl+Shift+F", self.search_box.setFocus)
@@ -1476,7 +1773,7 @@ class MainWindow(QMainWindow):
 
     def preferences(self) -> None:
         current = QApplication.font().pointSize()
-        dialog = PreferencesDialog(current, self)
+        dialog = PreferencesDialog(current, load_paste_prefs(), self)
         if dialog.exec() != QDialog.Accepted:
             return
         size = dialog.size_spin.value()
@@ -1488,7 +1785,12 @@ class MainWindow(QMainWindow):
         # with an explicit font, so it ignores the cascade and keeps its
         # 12 pt writing size.
         self.setFont(font)
-        QSettings().setValue("ui/fontSize", size)
+        settings = QSettings()
+        settings.setValue("ui/fontSize", size)
+        settings.setValue("paste/fonts", dialog.paste_fonts.isChecked())
+        settings.setValue("paste/paragraphs", dialog.paste_paragraphs.isChecked())
+        settings.setValue("paste/inline", dialog.paste_inline.isChecked())
+        settings.setValue("paste/alignment", dialog.paste_alignment.isChecked())
         self.statusBar().showMessage(f"Interface font set to {size} pt", 3000)
 
     def replace_in_project(self) -> None:

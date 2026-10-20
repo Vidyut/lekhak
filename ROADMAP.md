@@ -230,7 +230,7 @@ project falls back to the empty window with no dialog.
 Tests: `tests/test_app_resume.py` (9 offscreen GUI tests; QSettings
 redirected to a temp dir so the suite never touches real config).
 
-### 1.10 Paste that doesn't mangle formatting, with preferences
+### 1.10 Paste that doesn't mangle formatting, with preferences — DONE
 **Request:** "default behaviour should copy stuff like bold/italics, but not
 paragraph formatting or font… paste in something and line break turns into
 two line breaks, indents change, line spacing changes, font changes… and if
@@ -247,6 +247,23 @@ double-line-break noise that clipboard HTML carries. Preferences gain a
 checkbox section — font, paragraph formatting, alignment, inline formatting
 — plus a "keep everything" path for pasting a fully formatted passage on
 purpose (which feeds 1.11). Ctrl+Shift+V stays plain-text paste.
+**Implemented (2026-10-20):** `LinkEditor.insertFromMimeData` scrubs every
+HTML paste through `sanitize_pasted_html()` — a scratch document rebuilt
+read-then-write: each fragment gets a fresh char format holding only the
+kept properties, each block a fresh block format (alignment kept by
+default; margins/indent/line-height only when asked), and blank-paragraph
+runs collapse (leading/trailing runs go, interior runs shrink to one) —
+except when paragraph formatting is kept, which leaves structure alone.
+Anchors ride along whatever the boxes say (a link is content, not skin);
+image objects pass through untouched. Policy lives in `QSettings` keys
+`paste/fonts|paragraphs|inline|alignment`, read live by
+`load_paste_prefs()`; `PreferencesDialog` gains the four checkboxes. Edit
+menu gains Cut/Copy/Paste plus "Paste as Plain Text" (Ctrl+Shift+V — Qt
+has no plain-paste API, so `paste_as_plain_text()` recovers the words even
+from an HTML-only clipboard) and "Paste and Keep All Formatting"
+(`paste_keep_all()`, the deliberate full-fidelity path feeding 1.11).
+Tests: `tests/test_app_paste.py` (31 offscreen tests; QSettings redirected
+to a temp dir, same contract as the resume tests).
 
 ### 1.11 Paragraph styles from real formatting
 **Request:** "paste beautifully formatted text, right click, update paragraph
