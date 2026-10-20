@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from html import escape, unescape
 from pathlib import Path
 
+from .templates import TemplateSet
+
 
 TAG_RE = re.compile(r"<[^>]+>")
 
@@ -34,6 +36,7 @@ class Document:
     position: int
     word_target: int
     kind: str
+    word_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,7 @@ class Project:
                 synopsis TEXT NOT NULL DEFAULT '',
                 position INTEGER NOT NULL,
                 word_target INTEGER NOT NULL DEFAULT 0,
+                word_count INTEGER NOT NULL DEFAULT 0,
                 kind TEXT NOT NULL DEFAULT 'scene',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -127,6 +131,10 @@ class Project:
             self.connection.execute(
                 "ALTER TABLE documents ADD COLUMN kind TEXT NOT NULL DEFAULT 'scene'"
             )
+        if "word_count" not in columns:
+            self.connection.execute(
+                "ALTER TABLE documents ADD COLUMN word_count INTEGER NOT NULL DEFAULT 0"
+            )
         metadata_columns = {
             row[1] for row in self.connection.execute("PRAGMA table_info(document_metadata)")
         }
@@ -145,6 +153,13 @@ class Project:
             "WHERE title='Draft' AND parent_id IS NULL AND kind='chapter'"
         )
         self.connection.commit()
+        if self.get_setting("word_count_backfill") != "1":
+            for row in self.connection.execute("SELECT id FROM documents").fetchall():
+                count = len(self.plain_text(self.read_content(row[0])).split())
+                self.connection.execute(
+                    "UPDATE documents SET word_count=? WHERE id=?", (count, row[0])
+                )
+            self.set_setting("word_count_backfill", "1")
 
     def close(self) -> None:
         if self.connection:
@@ -197,12 +212,12 @@ class Project:
         )
         self.db.commit()
         self.write_content(document_id, "")
-        return Document(document_id, parent_id, title, "", position, 0, kind)
+        return Document(document_id, parent_id, title, "", position, 0, kind, 0)
 
     def documents(self) -> list[Document]:
         rows = self.db.execute(
-            "SELECT id,parent_id,title,synopsis,position,word_target,kind FROM documents "
-            "ORDER BY parent_id,position"
+            "SELECT id,parent_id,title,synopsis,position,word_target,kind,word_count "
+            "FROM documents ORDER BY parent_id,position"
         ).fetchall()
         return [Document(**dict(row)) for row in rows]
 
@@ -301,9 +316,10 @@ class Project:
         except BaseException:
             Path(temporary_name).unlink(missing_ok=True)
             raise
+        count = len(self.plain_text(html).split())
         self.db.execute(
-            "UPDATE documents SET updated_at=? WHERE id=?",
-            (datetime.now(timezone.utc).isoformat(), document_id),
+            "UPDATE documents SET updated_at=?, word_count=? WHERE id=?",
+            (datetime.now(timezone.utc).isoformat(), count, document_id),
         )
         self.db.commit()
 
@@ -412,63 +428,203 @@ class Project:
         documents = [d for d in self.ordered_documents() if d.kind in EXPORT_KINDS]
         return documents if selected_ids is None else [d for d in documents if d.id in selected_ids]
 
-    def render_template(self, document: Document, template: str, *, html: bool = False) -> str:
-        content = self.read_content(document.id)
-        if not html:
-            content = self.plain_text(content)
+    def _template_values(self, document: Document, content: str | None = None,
+                         extra: dict[str, str] | None = None) -> dict[str, str]:
+        if content is None:
+            content = self.read_content(document.id)
         values = {
-            "title": document.title,
-            "kind": document.kind,
-            "synopsis": document.synopsis,
-            "content": content,
-            "word_count": str(len(self.plain_text(self.read_content(document.id)).split())),
+            "Title": document.title,
+            "Kind": document.kind,
+            "Synopsis": document.synopsis,
+            "WordCount": str(document.word_count),
+            "Content": content,
         }
-        metadata = self.metadata(document.id)
-        rendered = re.sub(
-            r"\{metadata:([^{}]+)\}",
-            lambda match: (
-                escape(metadata.get(match.group(1).strip(), ""))
-                if html else metadata.get(match.group(1).strip(), "")
-            ),
-            template,
-        )
-        for key, value in values.items():
-            replacement = value if key == "content" or not html else escape(value)
-            rendered = rendered.replace("{" + key + "}", replacement)
-        return rendered
+        for key, value in self.metadata(document.id).items():
+            values[f"Metadata.{key}"] = value
+        if extra:
+            values.update(extra)
+        return values
+
+    def render_template(self, document: Document, template: str,
+                        *, html: bool = False) -> str:
+        """Fill a one-off template string with ``${...}`` placeholders."""
+        from .templates import PLACEHOLDER_RE
+
+        values = self._template_values(document)
+        if not html:
+            values["Content"] = self.plain_text(values["Content"])
+
+        def substitute(match: re.Match) -> str:
+            key = match.group(1).strip()
+            value = values.get(key, "")
+            if html and key.lower() != "content":
+                return escape(value)
+            return value
+
+        return PLACEHOLDER_RE.sub(substitute, template)
+
+    def _nearest_chapter_ancestor(self, document_id: str,
+                                  parent_map: dict[str, str | None],
+                                  kinds: dict[str, str]) -> str | None:
+        current = parent_map.get(document_id)
+        while current is not None:
+            if kinds.get(current) == "chapter":
+                return current
+            current = parent_map.get(current)
+        return None
+
+    def _render_document(self, document: Document, templates: TemplateSet,
+                         html: bool, *, slot: str | None = None,
+                         content: str | None = None,
+                         extra: dict[str, str] | None = None) -> str:
+        body = self.read_content(document.id) if content is None else content
+        if not html:
+            body = self.plain_text(body)
+        values = self._template_values(document, content=body, extra=extra)
+        if slot is None:
+            slot = "chapter" if document.kind == "chapter" else "scene"
+        return templates.render(slot, values, html=html)
+
+    def compile_units(self, selected_ids: set[str] | None = None,
+                      templates: TemplateSet | None = None,
+                      *, html: bool = True) -> list[tuple[str, str]]:
+        """Compile the manuscript into ordered ``(title, body)`` units.
+
+        A unit is one chapter (its own text plus its descendant scenes, in
+        binder order, separated by the scene-divider slot) or one standalone
+        scene that belongs to no chapter. Every body is fully rendered
+        through the template set.
+        """
+        templates = templates or TemplateSet.builtin()
+        export_docs = self._export_documents(selected_ids)
+        export_ids = {d.id for d in export_docs}
+        all_docs = self.documents()
+        parent_map = {d.id: d.parent_id for d in all_docs}
+        kinds = {d.id: d.kind for d in all_docs}
+        chapter_scenes: dict[str, list[Document]] = {}
+        ordered: list[Document] = []
+        for document in export_docs:
+            chapter_id = self._nearest_chapter_ancestor(document.id, parent_map, kinds)
+            if document.kind == "scene" and chapter_id in export_ids:
+                chapter_scenes.setdefault(chapter_id, []).append(document)
+            else:
+                ordered.append(document)
+
+        units: list[tuple[str, str]] = []
+        chapter_number = 0
+        scene_number = 0
+        words_total = 0
+        divider = templates.slot("scene_divider", html=html).strip()
+        scene_end = templates.slot("scene_end", html=html).strip()
+        chapter_end = templates.slot("chapter_end", html=html).strip()
+        for document in ordered:
+            if document.kind == "chapter":
+                chapter_number += 1
+                scene_number = 0
+                parts: list[str] = []
+                own = self.read_content(document.id)
+                if not html:
+                    own = self.plain_text(own)
+                if own.strip():
+                    parts.append(own)
+                for index, scene in enumerate(chapter_scenes.get(document.id, [])):
+                    scene_number += 1
+                    if index > 0 and divider:
+                        parts.append(templates.render("scene_divider", {}, html=html))
+                    slot = "scene"
+                    if index == 0 and templates.slot("first_scene", html=html).strip():
+                        slot = "first_scene"
+                    extra = {"ChapterNumber": str(chapter_number),
+                             "SceneNumber": str(scene_number),
+                             "WordsTotal": str(words_total + scene.word_count)}
+                    parts.append(self._render_document(
+                        scene, templates, html, slot=slot, extra=extra))
+                    words_total += scene.word_count
+                    if scene_end:
+                        parts.append(templates.render(
+                            "scene_end",
+                            self._template_values(scene, content=""), html=html))
+                extra = {"ChapterNumber": str(chapter_number),
+                         "SceneNumber": "0",
+                         "WordsTotal": str(words_total)}
+                body = self._render_document(
+                    document, templates, html, slot="chapter",
+                    content="\n".join(parts), extra=extra)
+                words_total += document.word_count
+                if chapter_end:
+                    body += "\n" + templates.render(
+                        "chapter_end",
+                        self._template_values(document, content=""), html=html)
+                units.append((document.title, body))
+            else:
+                scene_number += 1
+                extra = {"ChapterNumber": str(chapter_number),
+                         "SceneNumber": str(scene_number),
+                         "WordsTotal": str(words_total)}
+                body = self._render_document(
+                    document, templates, html, extra=extra)
+                words_total += document.word_count
+                if scene_end:
+                    body += "\n" + templates.render(
+                        "scene_end",
+                        self._template_values(document, content=""), html=html)
+                units.append((document.title, body))
+        return units
 
     def export_text(self, destination: Path, selected_ids: set[str] | None = None,
-                    template: str = "{content}") -> None:
-        parts = []
-        for document in self._export_documents(selected_ids):
-            body = self.render_template(document, template)
-            parts.append(f"{document.title}\n\n{body}".strip())
-        self._atomic_write(Path(destination), "\n\n\n".join(parts) + "\n")
+                    templates: TemplateSet | None = None) -> None:
+        templates = templates or TemplateSet.builtin()
+        units = self.compile_units(selected_ids, templates, html=False)
+        header = templates.render("project_header", {}, html=False)
+        footer = templates.render("project_footer", {}, html=False)
+        body = "\n\n\n".join(body for _title, body in units if body.strip())
+        content = "\n".join(part for part in (header, body, footer) if part.strip())
+        self._atomic_write(Path(destination), content.rstrip() + "\n")
 
     def export_html(self, destination: Path, selected_ids: set[str] | None = None,
-                    template: str = "{content}") -> None:
-        body = []
-        for document in self._export_documents(selected_ids):
-            body.append(
-                f"<section><h1>{escape(document.title)}</h1>"
-                f"{self.render_template(document, template, html=True)}</section>"
-            )
-        title = self.get_setting("title", "Lekhak")
+                    templates: TemplateSet | None = None) -> None:
+        templates = templates or TemplateSet.builtin()
+        units = self.compile_units(selected_ids, templates, html=True)
+        header = templates.render("project_header", {}, html=True)
+        footer = templates.render("project_footer", {}, html=True)
+        title = escape(self.get_setting("title", "Lekhak"))
         content = (
             "<!doctype html><meta charset='utf-8'>"
-            f"<title>{escape(title)}</title><main>{''.join(body)}</main>"
+            f"<title>{title}</title>{header}"
+            f"{''.join(body for _t, body in units)}{footer}"
         )
         self._atomic_write(Path(destination), content)
 
     def export_docx(self, destination: Path, selected_ids: set[str] | None = None,
-                    template: str = "{content}") -> None:
+                    templates: TemplateSet | None = None) -> None:
+        """DOCX keeps structural headings (title as Heading 1/2) and plain
+        body text; header/footer slots do not apply here. A Word TOC field
+        (page numbers only) is inserted at the top; Word or LibreOffice
+        fills it in on field update."""
         from docx import Document as DocxDocument
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
 
         output = DocxDocument()
         output.core_properties.title = self.get_setting("title", "Lekhak")
+        paragraph = output.add_paragraph()
+        run = paragraph.add_run()
+        begin = OxmlElement("w:fldChar")
+        begin.set(qn("w:fldCharType"), "begin")
+        instruction = OxmlElement("w:instrText")
+        instruction.set(qn("xml:space"), "preserve")
+        instruction.text = 'TOC \\o "1-3" \\z \\u'
+        separate = OxmlElement("w:fldChar")
+        separate.set(qn("w:fldCharType"), "separate")
+        placeholder = OxmlElement("w:t")
+        placeholder.text = "Update this field to build the table of contents."
+        end = OxmlElement("w:fldChar")
+        end.set(qn("w:fldCharType"), "end")
+        for element in (begin, instruction, separate, placeholder, end):
+            run._r.append(element)
         for document in self._export_documents(selected_ids):
             output.add_heading(document.title, level=1 if document.kind == "chapter" else 2)
-            for paragraph in self.render_template(document, template).split("\n"):
+            for paragraph in self.plain_text(self.read_content(document.id)).split("\n"):
                 if paragraph.strip():
                     output.add_paragraph(paragraph.strip())
         destination = Path(destination)
@@ -483,19 +639,35 @@ class Project:
             raise
 
     def export_epub(self, destination: Path, selected_ids: set[str] | None = None,
-                    template: str = "{content}") -> None:
-        documents = self._export_documents(selected_ids)
+                    templates: TemplateSet | None = None) -> None:
+        templates = templates or TemplateSet.builtin()
+        units = self.compile_units(selected_ids, templates, html=True)
+        header = templates.render("project_header", {}, html=True)
+        footer = templates.render("project_footer", {}, html=True)
         manifest, spine, nav_items, pages = [], [], [], []
-        for index, document in enumerate(documents, start=1):
-            filename, item_id = f"section-{index}.xhtml", f"section-{index}"
-            body = self.render_template(document, template, html=True)
+        section_names = [f"section-{index}.xhtml" for index in range(1, len(units) + 1)]
+        for index, ((title, body), filename) in enumerate(zip(units, section_names), start=1):
+            item_id = f"section-{index}"
             pages.append((filename, "<?xml version='1.0' encoding='utf-8'?>"
                 "<html xmlns='http://www.w3.org/1999/xhtml'><head>"
-                f"<title>{escape(document.title)}</title></head><body>"
-                f"<h1>{escape(document.title)}</h1>{body}</body></html>"))
+                f"<title>{escape(title)}</title></head><body>"
+                f"{header}{body}{footer}</body></html>"))
             manifest.append(f"<item id='{item_id}' href='{filename}' media-type='application/xhtml+xml'/>")
             spine.append(f"<itemref idref='{item_id}'/>")
-            nav_items.append(f"<li><a href='{filename}'>{escape(document.title)}</a></li>")
+            nav_items.append(f"<li><a href='{filename}'>{escape(title)}</a></li>")
+        if templates.slot("toc_page", html=True).strip():
+            entries = "".join(
+                f"<li><a href='{filename}'>{escape(title)}</a></li>"
+                for (title, _body), filename in zip(units, section_names)
+            )
+            toc_body = templates.render("toc_page", {"Entries": entries}, html=True)
+            pages.insert(0, ("toc.xhtml", "<?xml version='1.0' encoding='utf-8'?>"
+                "<html xmlns='http://www.w3.org/1999/xhtml'><head>"
+                "<title>Contents</title></head><body>"
+                f"{header}{toc_body}{footer}</body></html>"))
+            manifest.insert(0, "<item id='toc-page' href='toc.xhtml' "
+                "media-type='application/xhtml+xml'/>")
+            spine.insert(0, "<itemref idref='toc-page'/>")
         title = escape(self.get_setting("title", "Lekhak"))
         nav = ("<?xml version='1.0' encoding='utf-8'?><html xmlns='http://www.w3.org/1999/xhtml' "
             "xmlns:epub='http://www.idpf.org/2007/ops'><head><title>Contents</title></head>"

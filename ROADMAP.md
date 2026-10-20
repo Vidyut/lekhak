@@ -52,26 +52,24 @@ until 1.2/2.1.
 **Add:** project-scope replace (with preview and count), replace-in-title and
 replace-in-synopsis as opt-in checkboxes, regex mode.
 
-### 1.2 Export templates (yw2html model)
+### 1.2 Export templates (yw2html model) — DONE
 **Request:** default template; users add more; select per chapter/scene;
 metadata tags and formatting can modulate output. Reference: peter88213/yw2html.
 
-**Now:** one ad-hoc template string threaded through every `export_*` call,
-with `{title}`/`{content}`/`{metadata:key}` placeholders (`project.py:395`).
-
-**Change:** move to named template sets, as directories of files, one file
-per slot, looked up like yw2html's:
-- `html_header`, `html_footer` (project level)
-- `chapter`, `scene`, `first_scene`, `part` (chapter/scene headers)
-- `chapter_end`, `scene_divider`
-- role-based overrides (`notes`, `todo`, `unused`) that let a document be
-  marked and routed to a different template instead of being deleted.
-
-Placeholders grow to at least: `$Title`, `$Content`, `$Synopsis`,
-`$WordCount`, `$WordsTotal`, `$ChapterNumber`, `$SceneNumber`,
-`$Metadata.Key`, `$Tags`. A built-in default set ships in the project;
-user sets live in a directory and are selectable per project or per export.
-`render_template()` becomes a small resolver, not the whole system.
+**Implemented (2026-10-20):** `lekhak/templates.py` provides named template
+sets: directories of optional slot files (`project_header`, `project_footer`,
+`chapter`, `chapter_end`, `scene`, `first_scene`, `scene_end`,
+`scene_divider`), `.html` and `.txt` variants, missing slots falling back to
+built-in defaults. Placeholder syntax is yw2html's `${...}` family:
+`${Title}`, `${Content}`, `${Synopsis}`, `${WordCount}`, `${ChapterNumber}`,
+`${SceneNumber}`, `${WordsTotal}`, `${Metadata.Key}`. Sets live under
+`<project>/templates/<name>/` or `~/.config/lekhak/templates/<name>/`; the
+export dialog offers a dropdown, "New set…" (forks the current one) and
+"Open folder". A compile walks binder order: a chapter unit is its own text
+plus descendant scenes separated by the divider; standalone scenes export on
+their own. EPUB emits one page per unit. DOCX keeps structural headings
+(header slots do not apply there). Word counts are cached on the document
+row at save time, with a one-time backfill for older projects.
 
 ### 1.3 Word counts everywhere
 **Request:** counts for scenes, outliner, selected text, selected
@@ -114,6 +112,20 @@ a blank page when the flow lands on the wrong side.
 `next-odd`, `next-even`); DOCX export emits the right
 `WD_SECTION_START` / page break; PDF via LibreOffice headless or a direct
 writer, chosen at export time.
+
+### 1.7 Table of contents — DONE (PDF part waits on the PDF writer)
+**Request:** TOC with links for ebook, links and/or page numbers for PDF,
+page numbers only for DOCX.
+
+**Implemented (2026-10-20):** the compile already knows the unit list, so
+the TOC is a view of it. EPUB: every set gains a `toc_page` slot; when
+non-empty it is rendered as the first content page with `${Entries}` —
+one internal link per unit — on top of the spec-required nav document.
+DOCX: export inserts a real Word TOC field (`TOC \o "1-3" \z \u`, no
+`\h`, so it shows page numbers only), populated by Word or LibreOffice on
+field update. **Open:** PDF export does not exist yet (1.6); when it lands,
+the LibreOffice route inherits the DOCX field, giving page numbers, and an
+EPUB-route PDF can add link annotations.
 
 ## Phase 2 — books, variants, and conditional content
 

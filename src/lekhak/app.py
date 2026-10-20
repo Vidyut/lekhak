@@ -3,10 +3,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QSize, Qt, QTimer
+from PySide6.QtCore import QDate, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import (
-    QAction, QFont, QKeySequence, QTextBlockFormat, QTextCharFormat, QTextCursor,
-    QTextListFormat,
+    QAction, QDesktopServices, QFont, QKeySequence, QTextBlockFormat,
+    QTextCharFormat, QTextCursor, QTextListFormat,
 )
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFileDialog,
@@ -17,7 +17,10 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .project import Project
+from .project import EXPORT_KINDS, Project
+from .templates import (
+    copy_template_set, discover_template_sets, project_template_root,
+)
 
 
 class FindReplaceDialog(QDialog):
@@ -198,15 +201,17 @@ class MetadataDialog(QDialog):
 
 
 class ExportOptionsDialog(QDialog):
-    def __init__(self, documents, template: str, parent=None) -> None:
+    def __init__(self, documents, template_sets, current_set_name: str,
+                 parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Export Options")
-        self.resize(620, 620)
+        self.resize(620, 480)
+        self.template_sets = template_sets
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Include these chapters and scenes:"))
         self.documents = QListWidget()
         for document in documents:
-            prefix = "Chapter" if document.kind == "chapter" else "    Scene"
+            prefix = document.kind.capitalize()
             item = QListWidgetItem(f"{prefix}: {document.title}")
             item.setData(Qt.UserRole, document.id)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
@@ -223,11 +228,24 @@ class ExportOptionsDialog(QDialog):
         selection_buttons.addStretch()
         layout.addLayout(selection_buttons)
         layout.addWidget(QLabel(
-            "Section body template — placeholders: {title}, {kind}, {synopsis}, "
-            "{word_count}, {content}, {metadata:Field}"
+            "Template set — slot files with ${Title}, ${Content}, "
+            "${Synopsis}, ${WordCount}, ${ChapterNumber}, ${SceneNumber}, "
+            "${WordsTotal}, ${Metadata.Key}, and ${Entries} in toc_page"
         ))
-        self.template = QPlainTextEdit(template)
-        layout.addWidget(self.template)
+        set_row = QHBoxLayout()
+        self.set_box = QComboBox()
+        for template_set in template_sets:
+            self.set_box.addItem(template_set.name)
+            if template_set.name == current_set_name:
+                self.set_box.setCurrentIndex(self.set_box.count() - 1)
+        set_row.addWidget(self.set_box)
+        new_set = QPushButton("New set…")
+        new_set.clicked.connect(self._new_set)
+        set_row.addWidget(new_set)
+        open_folder = QPushButton("Open folder")
+        open_folder.clicked.connect(self._open_folder)
+        set_row.addWidget(open_folder)
+        layout.addLayout(set_row)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -243,6 +261,38 @@ class ExportOptionsDialog(QDialog):
             for index in range(self.documents.count())
             if self.documents.item(index).checkState() == Qt.Checked
         }
+
+    def selected_template_set(self):
+        name = self.set_box.currentText()
+        return next(s for s in self.template_sets if s.name == name)
+
+    def _new_set(self) -> None:
+        project = getattr(self.parent(), "project", None)
+        if not project:
+            return
+        name, accepted = QInputDialog.getText(self, "New template set", "Set name:")
+        if not accepted or not name.strip():
+            return
+        try:
+            current = self.selected_template_set()
+            created = copy_template_set(current, name.strip(), project.root)
+        except (ValueError, FileExistsError) as error:
+            QMessageBox.warning(self, "Cannot create set", str(error))
+            return
+        self.template_sets = discover_template_sets(project.root)
+        self.set_box.clear()
+        for template_set in self.template_sets:
+            self.set_box.addItem(template_set.name)
+            if template_set.name == created.name:
+                self.set_box.setCurrentIndex(self.set_box.count() - 1)
+
+    def _open_folder(self) -> None:
+        project = getattr(self.parent(), "project", None)
+        if not project:
+            return
+        root = project_template_root(project.root)
+        root.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
 
 
 class MainWindow(QMainWindow):
@@ -719,30 +769,31 @@ class MainWindow(QMainWindow):
         self.save_current()
         documents = [
             item for item in self.project.ordered_documents()
-            if item.kind in {"chapter", "scene"}
+            if item.kind in EXPORT_KINDS
         ]
-        template = self.project.get_setting("export_template", "{content}")
-        options = ExportOptionsDialog(documents, template, self)
+        template_sets = discover_template_sets(self.project.root)
+        current_set = self.project.get_setting("template_set", "default")
+        options = ExportOptionsDialog(documents, template_sets, current_set, self)
         if options.exec() != QDialog.Accepted:
             return
         selected_ids = options.selected_ids()
         if not selected_ids:
             QMessageBox.warning(self, "Nothing selected", "Select at least one chapter or scene.")
             return
-        template = options.template.toPlainText() or "{content}"
-        self.project.set_setting("export_template", template)
+        templates = options.selected_template_set()
+        self.project.set_setting("template_set", templates.name)
         suffix = {"text": ".txt", "html": ".html", "docx": ".docx", "epub": ".epub"}[kind]
         selected, _ = QFileDialog.getSaveFileName(self, "Export manuscript", "lekhak" + suffix)
         if selected:
             try:
                 if kind == "text":
-                    self.project.export_text(Path(selected), selected_ids, template)
+                    self.project.export_text(Path(selected), selected_ids, templates)
                 elif kind == "html":
-                    self.project.export_html(Path(selected), selected_ids, template)
+                    self.project.export_html(Path(selected), selected_ids, templates)
                 elif kind == "docx":
-                    self.project.export_docx(Path(selected), selected_ids, template)
+                    self.project.export_docx(Path(selected), selected_ids, templates)
                 else:
-                    self.project.export_epub(Path(selected), selected_ids, template)
+                    self.project.export_epub(Path(selected), selected_ids, templates)
                 self.statusBar().showMessage(f"Exported to {selected}", 5000)
             except Exception as error:
                 QMessageBox.critical(self, "Export failed", str(error))

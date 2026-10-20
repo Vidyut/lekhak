@@ -23,6 +23,12 @@ transparent, recoverable, and designed around ordinary files.
 - Plain-text and HTML manuscript export
 - DOCX and EPUB 3 manuscript export in binder order
 - Selective export of any combination of chapters and scenes
+- yw2html-style template sets: slot files per chapter/scene/divider role,
+  `${...}` and `${Metadata.Key}` placeholders, user sets selectable per
+  export, "New set" and "Open folder" in the export dialog
+- Inline table of contents page for EPUB (`toc_page` slot); page-number
+  TOC field for DOCX (update fields in Word/LibreOffice)
+- Cached word counts on every document
 - Arbitrary per-document metadata and reusable export templates
 - Typed metadata with text fields and calendar-backed date fields
 - Dropdown metadata with project-defined allowed values

@@ -105,22 +105,31 @@ class ProjectTests(unittest.TestCase):
         document = self.project.documents()[0]
         self.project.set_metadata(document.id, {"POV": "Maya", "Location": "Delhi"})
         rendered = self.project.render_template(
-            document, "POV: {metadata:POV}\nPlace: {metadata:Location}\n{content}"
+            document, "POV: ${Metadata.POV}\nPlace: ${Metadata.Location}\n${Content}"
         )
         self.assertIn("POV: Maya", rendered)
         self.assertIn("Place: Delhi", rendered)
 
     def test_export_can_select_individual_scenes(self):
-        chapter = self.project.documents()[0]
-        first = self.project.add_document("First", chapter.id, "scene")
-        second = self.project.add_document("Second", chapter.id, "scene")
+        from lekhak.templates import TemplateSet
+
+        root = self.project.documents()[0]
+        first = self.project.add_document("First", root.id, "scene")
+        second = self.project.add_document("Second", root.id, "scene")
+        self.project.set_metadata(first.id, {"POV": "Maya"})
         self.project.write_content(first.id, "<p>Include this.</p>")
         self.project.write_content(second.id, "<p>Exclude this.</p>")
+        templates = TemplateSet(
+            "test", None,
+            {"scene": "${Metadata.POV}\n${Content}"},
+            {"scene": "${Metadata.POV}\n${Content}"},
+        )
         destination = Path(self.temporary.name) / "selection.txt"
-        self.project.export_text(destination, {first.id}, "{metadata:POV}\n{content}")
+        self.project.export_text(destination, {first.id}, templates)
         exported = destination.read_text(encoding="utf-8")
         self.assertIn("Include this.", exported)
         self.assertNotIn("Exclude this.", exported)
+        self.assertIn("Maya", exported)
 
     def test_date_metadata_type_and_value_are_persisted(self):
         document = self.project.documents()[0]
@@ -133,7 +142,7 @@ class ProjectTests(unittest.TestCase):
         )
         self.assertIn(
             "2026-10-20",
-            self.project.render_template(document, "{metadata:Story date}"),
+            self.project.render_template(document, "${Metadata.Story date}"),
         )
 
     def test_dropdown_metadata_restricts_and_persists_options(self):
@@ -149,7 +158,7 @@ class ProjectTests(unittest.TestCase):
             ("Revised", "choice", ["Draft", "Revised", "Final"]),
         )
         self.assertEqual(
-            self.project.render_template(document, "{metadata:Status}"), "Revised"
+            self.project.render_template(document, "${Metadata.Status}"), "Revised"
         )
 
     def test_seeded_draft_is_a_folder(self):
