@@ -265,7 +265,7 @@ from an HTML-only clipboard) and "Paste and Keep All Formatting"
 Tests: `tests/test_app_paste.py` (31 offscreen tests; QSettings redirected
 to a temp dir, same contract as the resume tests).
 
-### 1.11 Paragraph styles from real formatting
+### 1.11 Paragraph styles from real formatting — DONE
 **Request:** "paste beautifully formatted text, right click, update paragraph
 preset or create new preset… now you can save it as a template and change
 your whole document accordingly." (Called "styles" in Word, "classes" in
@@ -276,6 +276,22 @@ format signature). Right-click in the editor: "Create style from paragraph…"
 (`apply_paragraph_style`) become the seed list, user styles join them and
 replace them. Scope check before building: this is formatting metadata only
 — never a second way to store prose.
+**Implemented (2026-10-20):** `SEED_STYLES` holds the six built-ins as
+signatures (size/weight/italic + full margins/indent — the complete margins
+are deliberate: switching away from Quote now actually resets the 32 pt
+instead of leaking it, which the old parallel arrays left behind). A
+signature captured by `capture_paragraph_signature()` records the block and
+the character format at the caret — underline, family, line-height and
+alignment only when present, so a plain paragraph still matches the seed it
+wears — and `style_signature_formats()` rebuilds formats from one, writing
+only the keys carried (seeds therefore never touch alignment, underline or
+family). Storage is one JSON string in the existing project-settings table
+(`paragraph_styles`): `save_style_from_cursor` / `update_style_from_cursor` /
+`remove_style` write it, `_load_styles` merges user styles over seeds (an
+override keeps its seed's place in the toolbar combo), junk settings fall
+back to seeds. Editor right-click extends Qt's own menu with Create / Update
+/ Delete; Update prefills the style `style_at_cursor()` detects by
+signature. Tests: `tests/test_app_styles.py` (11 offscreen tests).
 
 ### 1.12 Metadata panel on the right
 **Request:** "panel on the right for metadata — overall metadata setup on

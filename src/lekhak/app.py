@@ -806,6 +806,104 @@ class LinkEditor(QTextEdit):
         super().mousePressEvent(event)
 
 
+# The toolbar's six built-in paragraph styles as signatures — the seed
+# list user styles join and may replace by name (1.11). Each signature
+# carries exactly what apply_paragraph_style always set, made explicit so
+# stored styles and seeds round-trip through the same code; margins and
+# indent ride along on every seed so switching styles resets them instead
+# of leaking the previous style's. Alignment, underline, family and
+# line-height are deliberately absent: the built-ins never touched them.
+SEED_STYLES: dict[str, dict] = {
+    "Paragraph": {"size": 12.0, "weight": int(QFont.Normal),
+                  "italic": False, "top_margin": 0.0, "bottom_margin": 0.0,
+                  "left_margin": 0.0, "right_margin": 0.0, "indent": 0,
+                  "text_indent": 0.0},
+    "Title": {"size": 28.0, "weight": int(QFont.Bold), "italic": False,
+              "top_margin": 0.0, "bottom_margin": 0.0, "left_margin": 0.0,
+              "right_margin": 0.0, "indent": 0, "text_indent": 0.0},
+    "Heading 1": {"size": 22.0, "weight": int(QFont.Bold), "italic": False,
+                  "top_margin": 0.0, "bottom_margin": 0.0, "left_margin": 0.0,
+                  "right_margin": 0.0, "indent": 0, "text_indent": 0.0},
+    "Heading 2": {"size": 18.0, "weight": int(QFont.Bold), "italic": False,
+                  "top_margin": 0.0, "bottom_margin": 0.0, "left_margin": 0.0,
+                  "right_margin": 0.0, "indent": 0, "text_indent": 0.0},
+    "Heading 3": {"size": 15.0, "weight": int(QFont.Bold), "italic": False,
+                  "top_margin": 0.0, "bottom_margin": 0.0, "left_margin": 0.0,
+                  "right_margin": 0.0, "indent": 0, "text_indent": 0.0},
+    "Quote": {"size": 12.0, "weight": int(QFont.Normal), "italic": True,
+              "top_margin": 0.0, "bottom_margin": 0.0, "left_margin": 32.0,
+              "right_margin": 32.0, "indent": 0, "text_indent": 0.0},
+}
+
+
+def capture_paragraph_signature(cursor: QTextCursor) -> dict:
+    """Snapshot the formatting of the paragraph under the cursor.
+
+    The signature a saved style is: what you see is what a later
+    application reproduces. The character side comes from the format at
+    the caret (a mixed paragraph gives the part you are standing in);
+    underline, family and line-height are recorded only when actually
+    present, so a paragraph wearing none of them compares equal to the
+    built-in seed it matches. Size falls back to the 12 pt the editor
+    writes in when nothing has set one yet.
+    """
+    char_format = cursor.charFormat()
+    block_format = cursor.blockFormat()
+    signature = {
+        "size": char_format.fontPointSize() or 12.0,
+        "weight": int(char_format.fontWeight()),
+        "italic": bool(char_format.fontItalic()),
+        "top_margin": block_format.topMargin(),
+        "bottom_margin": block_format.bottomMargin(),
+        "left_margin": block_format.leftMargin(),
+        "right_margin": block_format.rightMargin(),
+        "indent": int(block_format.indent()),
+        "text_indent": block_format.textIndent(),
+        "alignment": int(block_format.alignment() or 0),
+    }
+    if char_format.fontUnderline():
+        signature["underline"] = True
+    families = char_format.fontFamilies()
+    if families:
+        signature["family"] = str(families[0])
+    line_height = block_format.lineHeight()
+    if line_height > 0:
+        signature["line_height"] = [line_height, int(block_format.lineHeightType())]
+    return signature
+
+
+def style_signature_formats(signature: dict) -> tuple[QTextBlockFormat, QTextCharFormat]:
+    """Rebuild the Qt formats a stored style signature stands for.
+
+    A signature is explicit about what it does NOT touch: keys it doesn't
+    carry are never written, which is how the built-in seeds leave
+    alignment, underline, family and line-height exactly as they found
+    them while still fully resetting size, weight, italic and margins.
+    """
+    char_format = QTextCharFormat()
+    char_format.setFontPointSize(signature.get("size", 12.0))
+    char_format.setFontWeight(signature.get("weight", int(QFont.Normal)))
+    char_format.setFontItalic(bool(signature.get("italic", False)))
+    if "underline" in signature:
+        char_format.setFontUnderline(bool(signature["underline"]))
+    family = signature.get("family")
+    if family:
+        char_format.setFontFamilies([family])
+    block_format = QTextBlockFormat()
+    if signature.get("alignment"):
+        block_format.setAlignment(Qt.Alignment(signature["alignment"]))
+    block_format.setTopMargin(signature.get("top_margin", 0.0))
+    block_format.setBottomMargin(signature.get("bottom_margin", 0.0))
+    block_format.setLeftMargin(signature.get("left_margin", 0.0))
+    block_format.setRightMargin(signature.get("right_margin", 0.0))
+    block_format.setIndent(signature.get("indent", 0))
+    block_format.setTextIndent(signature.get("text_indent", 0.0))
+    line_height = signature.get("line_height")
+    if line_height:
+        block_format.setLineHeight(line_height[0], line_height[1])
+    return block_format, char_format
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -814,6 +912,9 @@ class MainWindow(QMainWindow):
         self.loading = False
         self.focus_mode = False
         self._project_total = 0
+        # Paragraph styles (1.11): seeds plus this project's saved overrides.
+        self._styles = dict(SEED_STYLES)
+        self._user_styles: dict[str, dict] = {}
         self.setWindowTitle("Lekhak")
         self.resize(1280, 820)
 
@@ -832,6 +933,9 @@ class MainWindow(QMainWindow):
         self.editor.textChanged.connect(self._content_changed)
         self.editor.cursorPositionChanged.connect(self._update_word_count)
         self.editor.internal_link_clicked.connect(self._link_clicked)
+        # Qt's own right-click menu, extended with the style commands (1.11).
+        self.editor.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.editor.customContextMenuRequested.connect(self._editor_context_menu)
         # Pin the writing font so interface-font preferences never leak into
         # document content (toHtml() round-trips the body size); 12 pt is
         # what reset_zoom already assumed.
@@ -901,8 +1005,8 @@ class MainWindow(QMainWindow):
         toolbar.addAction("I", self.italic)
         toolbar.addAction("U", self.underline)
         self.style_box = QComboBox()
-        self.style_box.addItems(["Paragraph", "Title", "Heading 1", "Heading 2", "Heading 3", "Quote"])
         self.style_box.activated.connect(self.apply_paragraph_style)
+        self._rebuild_style_box()
         toolbar.addWidget(self.style_box)
         self.font_box = QFontComboBox()
         self.font_box.currentFontChanged.connect(lambda font: self.editor.setCurrentFont(font))
@@ -1040,6 +1144,7 @@ class MainWindow(QMainWindow):
         # this cursor belongs to a document that isn't open.
         if last_document and self.current_id == last_document:
             self._restore_cursor()
+        self._load_styles()
 
     def _restore_cursor(self) -> None:
         """Session resume (1.9): put the caret back where the last save left it.
@@ -1742,20 +1847,169 @@ class MainWindow(QMainWindow):
             self.editor.setFontPointSize(size)
 
     def apply_paragraph_style(self, index: int) -> None:
-        sizes = [12, 28, 22, 18, 15, 12]
-        weights = [QFont.Normal, QFont.Bold, QFont.Bold, QFont.Bold, QFont.Bold, QFont.Normal]
-        char_format = QTextCharFormat()
-        char_format.setFontPointSize(sizes[index])
-        char_format.setFontWeight(weights[index])
-        char_format.setFontItalic(index == 5)
-        block_format = QTextBlockFormat()
-        if index == 5:
-            block_format.setLeftMargin(32)
-            block_format.setRightMargin(32)
+        style = self._styles.get(self.style_box.itemData(index))
+        if style is None:
+            return
+        block_format, char_format = style_signature_formats(style)
         cursor = self.editor.textCursor()
         cursor.mergeBlockFormat(block_format)
         cursor.mergeCharFormat(char_format)
         self.editor.mergeCurrentCharFormat(char_format)
+
+    # --- paragraph styles (1.11) ------------------------------------------
+    # Named styles are formatting metadata about a manuscript — never
+    # prose — so one JSON string in the existing project-settings table
+    # is the whole storage; seeds live in code and need no file.
+
+    def _load_styles(self) -> None:
+        """Seeds plus this project's saved overrides; box rebuilt to match."""
+        raw = self.project.get_setting("paragraph_styles") if self.project else ""
+        try:
+            stored = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            stored = {}  # hand-edited settings may be junk; seeds still work
+        if not isinstance(stored, dict):
+            stored = {}
+        self._user_styles = {name: signature for name, signature in stored.items()
+                             if isinstance(name, str) and isinstance(signature, dict)}
+        self._refresh_styles()
+
+    def _refresh_styles(self) -> None:
+        """Effective list: a saved style keeps its seed's place when it
+        replaces the seed by name; new names join at the end."""
+        self._styles = {**SEED_STYLES, **self._user_styles}
+        self._rebuild_style_box()
+
+    def _rebuild_style_box(self) -> None:
+        current = self.style_box.currentData()
+        self.style_box.clear()
+        for name in self._styles:
+            self.style_box.addItem(name, name)
+        index = self.style_box.findData(current)
+        if index >= 0:
+            self.style_box.setCurrentIndex(index)
+
+    def _persist_styles(self) -> bool:
+        if not self.project:
+            return False
+        self.project.set_setting("paragraph_styles",
+                                 json.dumps(self._user_styles, indent=1))
+        return True
+
+    def save_style_from_cursor(self, name: str) -> bool:
+        """Create: capture the paragraph under the caret under a new name.
+
+        False means nothing happened — no project, empty name, or the
+        name is already taken (that is what Update is for).
+        """
+        name = name.strip()
+        if not self.project or not name or name in self._styles:
+            return False
+        self._user_styles[name] = capture_paragraph_signature(self.editor.textCursor())
+        self._refresh_styles()
+        self._persist_styles()
+        return True
+
+    def update_style_from_cursor(self, name: str) -> bool:
+        """Update: the named style's signature becomes the paragraph's now."""
+        if not self.project or name not in self._styles:
+            return False
+        self._user_styles[name] = capture_paragraph_signature(self.editor.textCursor())
+        self._refresh_styles()
+        self._persist_styles()
+        return True
+
+    def remove_style(self, name: str) -> bool:
+        """Delete a saved style; deleting a seed's override brings the
+        seed back, seeds themselves are never stored or removable."""
+        if not self.project or name not in self._user_styles:
+            return False
+        del self._user_styles[name]
+        self._refresh_styles()
+        self._persist_styles()
+        return True
+
+    def style_at_cursor(self) -> str | None:
+        """The style the paragraph under the caret already wears, or None.
+
+        Compared on the style's own keys only, so a built-in seed (which
+        never mentions alignment or family) matches the very paragraph it
+        just formatted even though the capture recorded more.
+        """
+        captured = capture_paragraph_signature(self.editor.textCursor())
+        for name, style in self._styles.items():
+            if all(captured.get(key) == value for key, value in style.items()):
+                return name
+        return None
+
+    def _editor_context_menu(self, position) -> None:
+        menu = self._build_editor_menu()
+        menu.exec(self.editor.mapToGlobal(position))
+
+    def _build_editor_menu(self) -> QMenu:
+        """Qt's own right-click menu, extended with the style commands.
+
+        Split from the exec so tests can inspect the actions; the dialogs
+        stay thin — capture and persistence live in
+        save_style_from_cursor and friends, which tests call directly
+        instead of driving a dialog.
+        """
+        menu = self.editor.createStandardContextMenu()
+        menu.addSeparator()
+        create = menu.addAction("Create Style from Paragraph…")
+        update = menu.addAction("Update Style from Paragraph…")
+        delete = menu.addAction("Delete Style…")
+        update.setEnabled(bool(self._styles))
+        delete.setEnabled(bool(self._user_styles))
+        create.triggered.connect(self._create_style_dialog)
+        update.triggered.connect(self._update_style_dialog)
+        delete.triggered.connect(self._delete_style_dialog)
+        return menu
+
+    def _create_style_dialog(self) -> None:
+        if not self.project:
+            self.statusBar().showMessage("Open a project before saving styles", 3000)
+            return
+        name, ok = QInputDialog.getText(self, "Create Style", "Style name:")
+        if not ok or not name or not name.strip():
+            return
+        name = name.strip()
+        if not self.save_style_from_cursor(name):
+            QMessageBox.warning(
+                self, "Style exists",
+                f'A style called "{name}" already exists — use '
+                "Update Style to replace it.",
+            )
+            return
+        self.statusBar().showMessage(f'Style "{name}" saved', 3000)
+
+    def _update_style_dialog(self) -> None:
+        if not self.project:
+            self.statusBar().showMessage("Open a project before saving styles", 3000)
+            return
+        names = list(self._styles)
+        current = self.style_at_cursor()
+        index = names.index(current) if current is not None else 0
+        name, ok = QInputDialog.getItem(
+            self, "Update Style",
+            "Replace this style with the current paragraph:", names, index, False,
+        )
+        if not ok:
+            return
+        self.update_style_from_cursor(name)
+        self.statusBar().showMessage(f'Style "{name}" updated', 3000)
+
+    def _delete_style_dialog(self) -> None:
+        if not self.project or not self._user_styles:
+            return
+        name, ok = QInputDialog.getItem(
+            self, "Delete Style", "Style to delete:",
+            list(self._user_styles), 0, False,
+        )
+        if not ok:
+            return
+        self.remove_style(name)
+        self.statusBar().showMessage(f'Style "{name}" deleted', 3000)
 
     def bullet_list(self) -> None:
         self.editor.textCursor().createList(QTextListFormat.ListDisc)
