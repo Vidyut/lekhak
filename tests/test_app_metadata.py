@@ -12,7 +12,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings  # noqa: E402
+from PySide6.QtCore import QEvent, QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication, QComboBox  # noqa: E402
 
 from lekhak.app import (  # noqa: E402
@@ -204,6 +204,69 @@ class MetadataPanelTests(unittest.TestCase):
 
         self.assertEqual(self.window._metadata_target, PROJECT_METADATA_TARGET)
         self.assertEqual(self.window.metadata_table.item(0, 0).text(), "Series")
+
+    def test_checkbox_type_stores_yes_or_no(self):
+        self.project.set_metadata(
+            self.scene.id, {"Trapped": "yes"}, {"Trapped": "checkbox"}
+        )
+        self.window._select_document(self.scene.id)
+
+        value_widget = self.window.metadata_table.cellWidget(0, 3)
+        self.assertTrue(value_widget.isChecked())
+
+        value_widget.setChecked(False)
+        self.assertEqual(
+            self.project.metadata_entries(self.scene.id)["Trapped"],
+            ("no", "checkbox", []),
+        )
+
+    def test_textarea_type_keeps_newlines_and_commits_on_focus_out(self):
+        self.project.set_metadata(
+            self.scene.id, {"Beat sheet": "one\ntwo"},
+            {"Beat sheet": "textarea"},
+        )
+        self.window._select_document(self.scene.id)
+
+        editor = self.window.metadata_table.cellWidget(0, 3)
+        editor.setPlainText("one\ntwo\nthree")
+        # Typing alone must not save per keystroke: the commit fires when
+        # the caret leaves the widget (the line-edit editingFinished
+        # equivalent). Send that event directly — offscreen windows do
+        # not reliably move real focus, but the filter sees the same
+        # event either way.
+        self.assertEqual(
+            self.project.metadata_entries(self.scene.id)["Beat sheet"][0],
+            "one\ntwo",
+        )
+
+        QApplication.sendEvent(editor, QEvent(QEvent.FocusOut))
+        self.assertEqual(
+            self.project.metadata_entries(self.scene.id)["Beat sheet"],
+            ("one\ntwo\nthree", "textarea", []),
+        )
+
+    def test_type_combo_offers_all_five_types(self):
+        self.window._select_document(self.scene.id)
+        self.window.metadata_table.add_field()
+
+        type_box = self.window.metadata_table.cellWidget(0, 1)
+        values = [type_box.itemData(index) for index in range(type_box.count())]
+        self.assertEqual(values, ["text", "textarea", "checkbox", "date", "choice"])
+
+    def test_switching_a_row_to_checkbox_round_trips_the_value(self):
+        self.project.set_metadata(self.scene.id, {"Done": "maybe"})
+        self.window._select_document(self.scene.id)
+
+        type_box = self.window.metadata_table.cellWidget(0, 1)
+        type_box.setCurrentIndex(type_box.findData("checkbox"))
+
+        value_widget = self.window.metadata_table.cellWidget(0, 3)
+        self.assertFalse(value_widget.isChecked())      # "maybe" is not yes
+        value_widget.setChecked(True)
+        self.assertEqual(
+            self.project.metadata_entries(self.scene.id)["Done"],
+            ("yes", "checkbox", []),
+        )
 
 
 if __name__ == "__main__":

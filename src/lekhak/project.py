@@ -857,8 +857,8 @@ class Project:
     def metadata_entries(self, document_id: str) -> dict[str, tuple[str, str, list[str]]]:
         """One document's metadata: key -> (value, value_type, options).
 
-        ``value_type`` is "text", "date" or "dropdown"; ``options`` holds
-        the allowed values for a dropdown.
+        ``value_type`` is "text", "textarea", "checkbox", "date" or
+        "choice"; ``options`` holds the allowed values for a choice.
         """
         rows = self.db.execute(
             "SELECT key,value,value_type,options_json FROM document_metadata "

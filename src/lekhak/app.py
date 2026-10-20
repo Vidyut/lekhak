@@ -38,7 +38,9 @@ import sys
 from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QSize, QSettings, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import (
+    QDate, QEvent, QSize, QSettings, Qt, QTimer, QUrl, Signal,
+)
 from PySide6.QtGui import (
     QAction, QDesktopServices, QFont, QKeySequence, QTextBlockFormat,
     QTextCharFormat, QTextCursor, QTextDocument, QTextDocumentFragment,
@@ -286,11 +288,14 @@ class MetadataTable(QTableWidget):
 
     Extracted from MetadataDialog (1.12) so the right-hand inspector can
     host exactly the same rows inline: the dialog wraps it with Save and
-    Cancel, the inspector saves live whenever ``changed`` fires. Dropdown
-    and date values live in cell widgets and never touch the items, so
-    their signals are wired to _notify alongside itemChanged. Every
-    programmatic row build runs under _loading to keep population silent;
-    remove_selected notifies itself, since its deletions are the point.
+    Cancel, the inspector saves live whenever ``changed`` fires. Dropdown,
+    date, checkbox and text-area values live in cell widgets and never
+    touch the items, so their signals are wired to _notify alongside
+    itemChanged; the text area commits on focus-out the way a line edit
+    commits editingFinished, so live-save does not run per keystroke.
+    Every programmatic row build runs under _loading to keep population
+    silent; remove_selected notifies itself, since its deletions are the
+    point.
     """
 
     changed = Signal()
@@ -341,9 +346,11 @@ class MetadataTable(QTableWidget):
             self.setItem(row, 0, QTableWidgetItem(key))
             type_box = QComboBox()
             type_box.addItem("Text", "text")
+            type_box.addItem("Text area", "textarea")
+            type_box.addItem("Checkbox", "checkbox")
             type_box.addItem("Date", "date")
             type_box.addItem("Dropdown", "choice")
-            type_box.setCurrentIndex({"text": 0, "date": 1, "choice": 2}.get(value_type, 0))
+            type_box.setCurrentIndex(max(0, type_box.findData(value_type)))
             self.setCellWidget(row, 1, type_box)
             options_editor = QLineEdit(", ".join(options))
             options_editor.setPlaceholderText("Draft, Revised, Final")
@@ -385,8 +392,23 @@ class MetadataTable(QTableWidget):
             return widget.date().toString(Qt.ISODate)
         if isinstance(widget, QComboBox):
             return widget.currentText()
+        if isinstance(widget, QCheckBox):
+            # "yes"/"no" rather than booleans: the value is what a
+            # template predicate compares and what a plain-text editor
+            # shows, so it should read like the writer's own word.
+            return "yes" if widget.isChecked() else "no"
+        if isinstance(widget, QPlainTextEdit):
+            return widget.toPlainText()
         item = self.item(row, 3)
         return item.text() if item else ""
+
+    def eventFilter(self, watched, event):
+        # A text area has no editingFinished signal, so watch for the
+        # caret leaving the widget — the same moment a line edit would
+        # commit — and only then tell the inspector to save.
+        if event.type() == QEvent.FocusOut and isinstance(watched, QPlainTextEdit):
+            self._notify()
+        return super().eventFilter(watched, event)
 
     def _set_value_widget(self, row: int, value_type: str, value: str,
                           options: list[str]) -> None:
@@ -400,6 +422,7 @@ class MetadataTable(QTableWidget):
             editor.setDate(date if date.isValid() else QDate.currentDate())
             editor.dateChanged.connect(lambda _date: self._notify())
             self.setCellWidget(row, 3, editor)
+            self.setRowHeight(row, self.verticalHeader().defaultSectionSize())
         elif value_type == "choice":
             editor = QComboBox()
             editor.addItems(options)
@@ -407,8 +430,22 @@ class MetadataTable(QTableWidget):
                 editor.setCurrentText(value)
             editor.currentTextChanged.connect(lambda _text: self._notify())
             self.setCellWidget(row, 3, editor)
+            self.setRowHeight(row, self.verticalHeader().defaultSectionSize())
+        elif value_type == "checkbox":
+            editor = QCheckBox()
+            editor.setChecked(value.strip().lower() in ("yes", "true", "1"))
+            editor.stateChanged.connect(lambda _state: self._notify())
+            self.setCellWidget(row, 3, editor)
+            self.setRowHeight(row, self.verticalHeader().defaultSectionSize())
+        elif value_type == "textarea":
+            editor = QPlainTextEdit(value)
+            editor.setMinimumHeight(56)
+            editor.installEventFilter(self)
+            self.setCellWidget(row, 3, editor)
+            self.setRowHeight(row, 64)
         else:
             self.setItem(row, 3, QTableWidgetItem(value))
+            self.setRowHeight(row, self.verticalHeader().defaultSectionSize())
 
     def values_types_options(self) -> tuple[
         dict[str, str], dict[str, str], dict[str, list[str]]

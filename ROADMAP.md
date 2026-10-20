@@ -366,6 +366,25 @@ string cannot outlive a save. The inspector shows a collapsible
 like a wiki link — save first, then switch. Nothing is stored: retitle or
 rewrite and the next view is correct.
 
+### 1.14 Metadata value types: text area and checkbox — DONE
+**Request:** "type of input text area — so metadata has text, date, drop
+down selector, and text area. Maybe people may want checkboxes?"
+**Add:** two more value types beside the existing text/date/dropdown:
+a multi-line text area, and a checkbox that stores "yes"/"no". The
+storage column was already free-form, so nothing about the project
+format changes; this is a panel feature only.
+**Implemented (2026-10-20):** the Type combo in the shared metadata
+table (inspector and Edit Metadata dialog alike) now offers Text, Text
+area, Checkbox, Date, Dropdown. The text area is an inline
+QPlainTextEdit with a taller row that commits when the caret leaves the
+widget — the line edit's editingFinished equivalent — so live-save in
+the inspector never runs per keystroke. The checkbox stores "yes"/"no"
+rather than booleans because the value is what a template predicate
+compares and what a transparent project file shows a plain-text editor;
+"true"/"1" are accepted on load and normalised on the next save.
+Switching a row's type carries the current value across where it still
+makes sense and falls back to the neutral default where it does not.
+
 ## Phase 2 — books, variants, and conditional content
 
 ### 2.1 Book-level compile settings
