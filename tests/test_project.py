@@ -131,6 +131,35 @@ class ProjectTests(unittest.TestCase):
         self.assertNotIn("Exclude this.", exported)
         self.assertIn("Maya", exported)
 
+    def test_project_metadata_round_trips_types_and_options(self):
+        self.project.set_project_metadata({
+            "Series": ("Strays", "text", []),
+            "Story date": ("2026-10-20", "date", []),
+            "Status": ("Draft", "choice", ["Draft", "Final"]),
+        })
+        entries = self.project.project_metadata()
+        self.assertEqual(entries["Series"], ("Strays", "text", []))
+        self.assertEqual(entries["Story date"], ("2026-10-20", "date", []))
+        self.assertEqual(entries["Status"], ("Draft", "choice", ["Draft", "Final"]))
+
+    def test_set_project_metadata_replaces_and_ignores_blank_keys(self):
+        self.project.set_project_metadata({"Series": ("Strays", "text", [])})
+        self.project.set_project_metadata(
+            {"Verse": ("Three", "text", []), "   ": ("x", "text", [])}
+        )
+        self.assertEqual(list(self.project.project_metadata()), ["Verse"])
+
+    def test_junk_project_metadata_setting_falls_back_to_empty(self):
+        self.project.set_setting("project_metadata", "{not json")
+        self.assertEqual(self.project.project_metadata(), {})
+        self.project.set_setting("project_metadata", '[1, 2, {"value": 5}]')
+        self.assertEqual(self.project.project_metadata(), {})
+        self.project.set_setting(
+            "project_metadata", '{"Series": 5, "Verse": {"value": "Three"}}'
+        )
+        self.assertEqual(self.project.project_metadata(),
+                         {"Verse": ("Three", "text", [])})
+
     def test_date_metadata_type_and_value_are_persisted(self):
         document = self.project.documents()[0]
         self.project.set_metadata(

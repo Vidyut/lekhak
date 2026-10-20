@@ -275,25 +275,171 @@ class PreferencesDialog(QDialog):
         layout.addWidget(buttons)
 
 
+# Sentinel for "the project itself" in place of a document id — project
+# metadata is edited whenever the inspector shows folder/root fields (1.12).
+# Document ids are uuid4 hex, so the two vocabularies cannot collide.
+PROJECT_METADATA_TARGET = "project"
+
+
+class MetadataTable(QTableWidget):
+    """The Field / Type / Allowed options / Value grid for metadata rows.
+
+    Extracted from MetadataDialog (1.12) so the right-hand inspector can
+    host exactly the same rows inline: the dialog wraps it with Save and
+    Cancel, the inspector saves live whenever ``changed`` fires. Dropdown
+    and date values live in cell widgets and never touch the items, so
+    their signals are wired to _notify alongside itemChanged. Every
+    programmatic row build runs under _loading to keep population silent;
+    remove_selected notifies itself, since its deletions are the point.
+    """
+
+    changed = Signal()
+
+    def __init__(self, entries: dict[str, tuple[str, str, list[str]]],
+                 parent=None) -> None:
+        super().__init__(0, 4, parent)
+        self.setHorizontalHeaderLabels(["Field", "Type", "Allowed options", "Value"])
+        self.horizontalHeader().setStretchLastSection(True)
+        self._loading = False
+        self.itemChanged.connect(self._item_changed)
+        for key, (value, value_type, options) in entries.items():
+            self._append_row(key, value, value_type, options)
+
+    def set_entries(self, entries: dict[str, tuple[str, str, list[str]]]) -> None:
+        """Swap in another target's rows without firing ``changed``."""
+        previous, self._loading = self._loading, True
+        try:
+            self.setRowCount(0)
+            for key, (value, value_type, options) in entries.items():
+                self._append_row(key, value, value_type, options)
+        finally:
+            self._loading = previous
+
+    def add_field(self) -> None:
+        self._append_row("", "", "text", [])
+
+    def remove_selected(self) -> None:
+        rows = sorted({item.row() for item in self.selectedItems()}, reverse=True)
+        for row in rows:
+            self.removeRow(row)
+        if rows:
+            self._notify()
+
+    def _item_changed(self, _item: QTableWidgetItem) -> None:
+        self._notify()
+
+    def _notify(self) -> None:
+        if not self._loading:
+            self.changed.emit()
+
+    def _append_row(self, key: str, value: str, value_type: str,
+                    options: list[str]) -> None:
+        previous, self._loading = self._loading, True
+        try:
+            row = self.rowCount()
+            self.insertRow(row)
+            self.setItem(row, 0, QTableWidgetItem(key))
+            type_box = QComboBox()
+            type_box.addItem("Text", "text")
+            type_box.addItem("Date", "date")
+            type_box.addItem("Dropdown", "choice")
+            type_box.setCurrentIndex({"text": 0, "date": 1, "choice": 2}.get(value_type, 0))
+            self.setCellWidget(row, 1, type_box)
+            options_editor = QLineEdit(", ".join(options))
+            options_editor.setPlaceholderText("Draft, Revised, Final")
+            options_editor.setEnabled(value_type == "choice")
+            self.setCellWidget(row, 2, options_editor)
+            self._set_value_widget(row, value_type, value, options)
+            type_box.currentIndexChanged.connect(lambda _index, box=type_box: self._type_changed(box))
+            options_editor.editingFinished.connect(
+                lambda editor=options_editor: self._options_changed(editor)
+            )
+        finally:
+            self._loading = previous
+
+    def _type_changed(self, type_box: QComboBox) -> None:
+        row = self.indexAt(type_box.pos()).row()
+        if row < 0:
+            return
+        value = self.row_value(row)
+        options_editor = self.cellWidget(row, 2)
+        options_editor.setEnabled(type_box.currentData() == "choice")
+        self._set_value_widget(row, type_box.currentData(), value, self._row_options(row))
+        self._notify()
+
+    def _options_changed(self, options_editor: QLineEdit) -> None:
+        row = self.indexAt(options_editor.pos()).row()
+        if row >= 0 and self.cellWidget(row, 1).currentData() == "choice":
+            self._set_value_widget(row, "choice", self.row_value(row), self._row_options(row))
+            self._notify()
+
+    def _row_options(self, row: int) -> list[str]:
+        editor = self.cellWidget(row, 2)
+        return list(dict.fromkeys(
+            option.strip() for option in editor.text().split(",") if option.strip()
+        ))
+
+    def row_value(self, row: int) -> str:
+        widget = self.cellWidget(row, 3)
+        if isinstance(widget, QDateEdit):
+            return widget.date().toString(Qt.ISODate)
+        if isinstance(widget, QComboBox):
+            return widget.currentText()
+        item = self.item(row, 3)
+        return item.text() if item else ""
+
+    def _set_value_widget(self, row: int, value_type: str, value: str,
+                          options: list[str]) -> None:
+        self.removeCellWidget(row, 3)
+        self.takeItem(row, 3)
+        if value_type == "date":
+            editor = QDateEdit()
+            editor.setCalendarPopup(True)
+            editor.setDisplayFormat("dd MMM yyyy")
+            date = QDate.fromString(value, Qt.ISODate)
+            editor.setDate(date if date.isValid() else QDate.currentDate())
+            editor.dateChanged.connect(lambda _date: self._notify())
+            self.setCellWidget(row, 3, editor)
+        elif value_type == "choice":
+            editor = QComboBox()
+            editor.addItems(options)
+            if value in options:
+                editor.setCurrentText(value)
+            editor.currentTextChanged.connect(lambda _text: self._notify())
+            self.setCellWidget(row, 3, editor)
+        else:
+            self.setItem(row, 3, QTableWidgetItem(value))
+
+    def values_types_options(self) -> tuple[
+        dict[str, str], dict[str, str], dict[str, list[str]]
+    ]:
+        values, value_types, options = {}, {}, {}
+        for row in range(self.rowCount()):
+            key_item = self.item(row, 0)
+            key = key_item.text().strip() if key_item else ""
+            if key:
+                type_box = self.cellWidget(row, 1)
+                value_type = type_box.currentData()
+                value_types[key] = value_type
+                values[key] = self.row_value(row)
+                options[key] = self._row_options(row) if value_type == "choice" else []
+        return values, value_types, options
+
+
 class MetadataDialog(QDialog):
     def __init__(self, entries: dict[str, tuple[str, str, list[str]]], parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Document Metadata")
+        self.setWindowTitle("Metadata")
         self.resize(520, 360)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Add any fields you need, such as POV, Location, Date, or Status."))
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Field", "Type", "Allowed options", "Value"])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table = MetadataTable(entries)
         layout.addWidget(self.table)
-        for key, entry in entries.items():
-            value, value_type, options = entry
-            self._append_row(key, value, value_type, options)
         controls = QHBoxLayout()
         add_button = QPushButton("Add field")
         remove_button = QPushButton("Remove selected")
-        add_button.clicked.connect(lambda: self._append_row("", "", "text", []))
-        remove_button.clicked.connect(self._remove_selected)
+        add_button.clicked.connect(self.table.add_field)
+        remove_button.clicked.connect(self.table.remove_selected)
         controls.addWidget(add_button)
         controls.addWidget(remove_button)
         controls.addStretch()
@@ -303,94 +449,10 @@ class MetadataDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _append_row(self, key: str, value: str, value_type: str,
-                    options: list[str]) -> None:
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-        self.table.setItem(row, 0, QTableWidgetItem(key))
-        type_box = QComboBox()
-        type_box.addItem("Text", "text")
-        type_box.addItem("Date", "date")
-        type_box.addItem("Dropdown", "choice")
-        type_box.setCurrentIndex({"text": 0, "date": 1, "choice": 2}.get(value_type, 0))
-        self.table.setCellWidget(row, 1, type_box)
-        options_editor = QLineEdit(", ".join(options))
-        options_editor.setPlaceholderText("Draft, Revised, Final")
-        options_editor.setEnabled(value_type == "choice")
-        self.table.setCellWidget(row, 2, options_editor)
-        self._set_value_widget(row, value_type, value, options)
-        type_box.currentIndexChanged.connect(lambda _index, box=type_box: self._type_changed(box))
-        options_editor.editingFinished.connect(
-            lambda editor=options_editor: self._options_changed(editor)
-        )
-
-    def _type_changed(self, type_box: QComboBox) -> None:
-        row = self.table.indexAt(type_box.pos()).row()
-        if row < 0:
-            return
-        value = self._row_value(row)
-        options_editor = self.table.cellWidget(row, 2)
-        options_editor.setEnabled(type_box.currentData() == "choice")
-        self._set_value_widget(row, type_box.currentData(), value, self._row_options(row))
-
-    def _options_changed(self, options_editor: QLineEdit) -> None:
-        row = self.table.indexAt(options_editor.pos()).row()
-        if row >= 0 and self.table.cellWidget(row, 1).currentData() == "choice":
-            self._set_value_widget(row, "choice", self._row_value(row), self._row_options(row))
-
-    def _row_options(self, row: int) -> list[str]:
-        editor = self.table.cellWidget(row, 2)
-        return list(dict.fromkeys(
-            option.strip() for option in editor.text().split(",") if option.strip()
-        ))
-
-    def _row_value(self, row: int) -> str:
-        widget = self.table.cellWidget(row, 3)
-        if isinstance(widget, QDateEdit):
-            return widget.date().toString(Qt.ISODate)
-        if isinstance(widget, QComboBox):
-            return widget.currentText()
-        item = self.table.item(row, 3)
-        return item.text() if item else ""
-
-    def _set_value_widget(self, row: int, value_type: str, value: str,
-                          options: list[str]) -> None:
-        self.table.removeCellWidget(row, 3)
-        self.table.takeItem(row, 3)
-        if value_type == "date":
-            editor = QDateEdit()
-            editor.setCalendarPopup(True)
-            editor.setDisplayFormat("dd MMM yyyy")
-            date = QDate.fromString(value, Qt.ISODate)
-            editor.setDate(date if date.isValid() else QDate.currentDate())
-            self.table.setCellWidget(row, 3, editor)
-        elif value_type == "choice":
-            editor = QComboBox()
-            editor.addItems(options)
-            if value in options:
-                editor.setCurrentText(value)
-            self.table.setCellWidget(row, 3, editor)
-        else:
-            self.table.setItem(row, 3, QTableWidgetItem(value))
-
-    def _remove_selected(self) -> None:
-        for row in sorted({item.row() for item in self.table.selectedItems()}, reverse=True):
-            self.table.removeRow(row)
-
     def values_types_options(self) -> tuple[
         dict[str, str], dict[str, str], dict[str, list[str]]
     ]:
-        values, value_types, options = {}, {}, {}
-        for row in range(self.table.rowCount()):
-            key_item = self.table.item(row, 0)
-            key = key_item.text().strip() if key_item else ""
-            if key:
-                type_box = self.table.cellWidget(row, 1)
-                value_type = type_box.currentData()
-                value_types[key] = value_type
-                values[key] = self._row_value(row)
-                options[key] = self._row_options(row) if value_type == "choice" else []
-        return values, value_types, options
+        return self.table.values_types_options()
 
 
 class ExportOptionsDialog(QDialog):
@@ -915,6 +977,12 @@ class MainWindow(QMainWindow):
         # Paragraph styles (1.11): seeds plus this project's saved overrides.
         self._styles = dict(SEED_STYLES)
         self._user_styles: dict[str, dict] = {}
+        # Whose rows the inspector's metadata table is showing right now:
+        # a document id, PROJECT_METADATA_TARGET, or None with no project.
+        # Captured when the table is populated so a late edit (focus
+        # leaving a cell mid-selection-change) still lands where it came
+        # from instead of following current_id (1.12).
+        self._metadata_target: str | None = None
         self.setWindowTitle("Lekhak")
         self.resize(1280, 820)
 
@@ -974,12 +1042,29 @@ class MainWindow(QMainWindow):
         self.target.setSpecialValueText("No target")
         self.target.valueChanged.connect(self._metadata_changed)
 
+        # Metadata (1.12): the same Field/Type/Options/Value rows the Edit
+        # Metadata dialog edits, inline and live — project-level fields on
+        # folders/root, the document's own rows everywhere else.
+        self.metadata_table = MetadataTable({})
+        self.metadata_table.changed.connect(self._metadata_table_changed)
+        self.metadata_add_button = QPushButton("Add field")
+        self.metadata_remove_button = QPushButton("Remove selected")
+        self.metadata_add_button.clicked.connect(self.metadata_table.add_field)
+        self.metadata_remove_button.clicked.connect(self.metadata_table.remove_selected)
+
         inspector = QWidget()
         inspector_layout = QVBoxLayout(inspector)
         inspector_layout.addWidget(QLabel("Synopsis"))
         inspector_layout.addWidget(self.synopsis)
         inspector_layout.addWidget(QLabel("Section target"))
         inspector_layout.addWidget(self.target)
+        inspector_layout.addWidget(QLabel("Metadata"))
+        inspector_layout.addWidget(self.metadata_table)
+        metadata_buttons = QHBoxLayout()
+        metadata_buttons.addWidget(self.metadata_add_button)
+        metadata_buttons.addWidget(self.metadata_remove_button)
+        metadata_buttons.addStretch()
+        inspector_layout.addLayout(metadata_buttons)
 
         splitter = QSplitter()
         splitter.addWidget(self.tree)
@@ -1098,6 +1183,9 @@ class MainWindow(QMainWindow):
         self.editor.setEnabled(enabled)
         self.corkboard.setEnabled(enabled)
         self.synopsis.setEnabled(enabled)
+        self.metadata_table.setEnabled(enabled)
+        self.metadata_add_button.setEnabled(enabled)
+        self.metadata_remove_button.setEnabled(enabled)
 
     def new_project(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Choose project location")
@@ -1145,6 +1233,10 @@ class MainWindow(QMainWindow):
         if last_document and self.current_id == last_document:
             self._restore_cursor()
         self._load_styles()
+        # Selection may not have fired (empty tree, first document stays
+        # unselected): seed the metadata panel anyway — root means the
+        # project's own fields.
+        self._populate_metadata_table()
 
     def _restore_cursor(self) -> None:
         """Session resume (1.9): put the caret back where the last save left it.
@@ -1440,6 +1532,7 @@ class MainWindow(QMainWindow):
             self.editor.clear()
             self.synopsis.clear()
             self.target.setValue(0)
+        self._populate_metadata_table()
         self.loading = False
         self._update_word_count()
         self._refresh_corkboard()
@@ -1453,6 +1546,67 @@ class MainWindow(QMainWindow):
     def _metadata_changed(self) -> None:
         if not self.loading:
             self.save_timer.start()
+
+    def _selection_metadata_target(self) -> str | None:
+        """What the metadata section (and Edit Metadata…) acts on: the
+        project's own fields with nothing selected or a folder selected —
+        the outliner root's "overall setup" — and the document's rows on
+        chapters, scenes and notes (1.12)."""
+        if not self.project:
+            return None
+        if not self.current_id:
+            return PROJECT_METADATA_TARGET
+        kind = next(
+            (d.kind for d in self.project.documents() if d.id == self.current_id),
+            None,
+        )
+        if kind is None:
+            return None
+        return PROJECT_METADATA_TARGET if kind == "folder" else self.current_id
+
+    def _populate_metadata_table(self) -> None:
+        """Point the inspector's metadata section at the current selection.
+
+        Silent on its own: set_entries swallows the table's own signals,
+        so a repopulation never reads as an edit.
+        """
+        target = self._selection_metadata_target()
+        self._metadata_target = target
+        if target is None:
+            self.metadata_table.set_entries({})
+        elif target == PROJECT_METADATA_TARGET:
+            self.metadata_table.set_entries(self.project.project_metadata())
+        else:
+            self.metadata_table.set_entries(self.project.metadata_entries(target))
+
+    def _metadata_table_changed(self) -> None:
+        """Live save of the rows the inspector is showing.
+
+        Writes to _metadata_target, the target captured when the table was
+        populated — an edit whose signal lands just after the selection
+        moved must not follow current_id into another document.
+        """
+        if self.loading or not self.project or not self._metadata_target:
+            return
+        table = self.metadata_table
+        values, value_types, options = table.values_types_options()
+        for row in range(table.rowCount()):
+            key_item = table.item(row, 0)
+            key = key_item.text().strip() if key_item else ""
+            if not key and table.row_value(row):
+                # A row that lost its name but still holds a value: mid-
+                # rename, or a field whose key was cleared first. Writing
+                # the named subset would drop that field from storage —
+                # the write waits until the row names itself, is emptied
+                # (the blank row then simply drops out of the subset), or
+                # is removed outright.
+                return
+        if self._metadata_target == PROJECT_METADATA_TARGET:
+            self.project.set_project_metadata(
+                {key: (values[key], value_types[key], options[key]) for key in values}
+            )
+        else:
+            self.project.set_metadata(self._metadata_target, values, value_types, options)
 
     def save_current(self) -> None:
         if not self.project or not self.current_id or self.loading:
@@ -1683,13 +1837,29 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Snapshot ‘{name.strip()}’ created", 3000)
 
     def edit_metadata(self) -> None:
-        if not self.project or not self.current_id:
+        """Dialog for whatever the inspector shows: project-level fields
+        on folders/root, the document's rows otherwise (1.12) — one
+        mental model, menu and panel always editing the same target."""
+        if not self.project:
             return
-        dialog = MetadataDialog(self.project.metadata_entries(self.current_id), self)
+        target = self._selection_metadata_target()
+        if target is None:
+            return
+        if target == PROJECT_METADATA_TARGET:
+            entries = self.project.project_metadata()
+        else:
+            entries = self.project.metadata_entries(target)
+        dialog = MetadataDialog(entries, self)
         if dialog.exec() == QDialog.Accepted:
             values, value_types, options = dialog.values_types_options()
-            self.project.set_metadata(self.current_id, values, value_types, options)
+            if target == PROJECT_METADATA_TARGET:
+                self.project.set_project_metadata(
+                    {key: (values[key], value_types[key], options[key]) for key in values}
+                )
+            else:
+                self.project.set_metadata(target, values, value_types, options)
             self.statusBar().showMessage("Metadata saved", 2000)
+            self._populate_metadata_table()
             self._refresh_outliner()
 
     def restore_snapshot(self) -> None:

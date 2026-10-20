@@ -785,6 +785,54 @@ class Project:
             result.setdefault(row[0], {})[row[1]] = (row[2], row[3], json.loads(row[4]))
         return result
 
+    def project_metadata(self) -> dict[str, tuple[str, str, list[str]]]:
+        """Project-level metadata: the inspector's "overall setup" fields
+        shown when a folder or nothing at all is selected (1.12).
+
+        Stored as one JSON string in the existing settings table — the
+        channel paragraph styles already use — rather than a new table or
+        a magic document id: no schema change, no migration, and a junk or
+        hand-edited value degrades to no fields instead of failing.
+        Entry shape matches metadata_entries: key -> (value, value_type,
+        options).
+        """
+        raw = self.get_setting("project_metadata")
+        try:
+            stored = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            stored = {}
+        if not isinstance(stored, dict):
+            stored = {}
+        entries: dict[str, tuple[str, str, list[str]]] = {}
+        for key, row in stored.items():
+            if not isinstance(key, str) or not isinstance(row, dict):
+                continue
+            value = row.get("value")
+            options = row.get("options")
+            entries[key] = (
+                str(value) if value is not None else "",
+                str(row.get("value_type", "text")),
+                [str(option) for option in options] if isinstance(options, list) else [],
+            )
+        return entries
+
+    def set_project_metadata(self, entries: dict[str, tuple[str, str, list[str]]]) -> None:
+        """Replace project-level metadata with exactly ``entries`` (same
+        replace-not-merge contract as set_metadata)."""
+        payload = {
+            key.strip(): {
+                "value": value,
+                "value_type": value_type,
+                "options": options,
+            }
+            for key, (value, value_type, options) in entries.items()
+            if key.strip()
+        }
+        self.set_setting(
+            "project_metadata",
+            json.dumps(payload, ensure_ascii=False, indent=1),
+        )
+
     def set_metadata(self, document_id: str, values: dict[str, str],
                      value_types: dict[str, str] | None = None,
                      options: dict[str, list[str]] | None = None) -> None:

@@ -293,7 +293,7 @@ back to seeds. Editor right-click extends Qt's own menu with Create / Update
 / Delete; Update prefills the style `style_at_cursor()` detects by
 signature. Tests: `tests/test_app_styles.py` (11 offscreen tests).
 
-### 1.12 Metadata panel on the right
+### 1.12 Metadata panel on the right — DONE
 **Request:** "panel on the right for metadata — overall metadata setup on
 outliner type pages and document specific metadata on chapter/scene/note
 pages."
@@ -303,6 +303,24 @@ is selected, per-document fields on chapters/scenes/notes — the same
 `document_metadata` rows `MetadataDialog` edits, inline instead of modal.
 Project-level metadata needs a home first (project settings or a table) —
 decide at build time, don't invent early.
+**Implemented (2026-10-20):** the dialog's Field/Type/Options/Value grid
+was extracted into `MetadataTable`, so the inspector hosts exactly the rows
+the dialog edits — the dialog keeps Save/Cancel, the panel saves live.
+Project-level metadata went to a single JSON string in the existing
+settings table (`project_metadata`) — the channel paragraph styles use —
+not a new table or a magic document id: no schema, no migration, junk
+degrades to no fields. Selection decides the target: `current_id` on
+chapters/scenes/notes, `PROJECT_METADATA_TARGET` on folders and with
+nothing selected (uuid-hex ids cannot collide); Edit Metadata… follows the
+same rule, so menu and panel always edit one target. Live writes are
+replace-the-whole-set, guarded against the mid-edit windows inline saving
+creates: a row that lost its key while holding a value blocks the write
+(rename safety), population runs signal-quiet, and an edit always targets
+the id captured when the table filled, never `current_id` at fire time.
+Known edges (refine later): the 4-column grid is cramped at the default
+270 px splitter width; folder documents' own metadata rows stay in storage
+and in search but no longer have UI (the request moves folders to
+project-level fields); project-level fields are not searchable.
 
 ### 1.13 Auto-linked related files (title mentions)
 **Request:** "auto-linking/tagging — if a file contains words that are an
