@@ -22,7 +22,7 @@ transparent, recoverable, and designed around ordinary files.
 - `Ctrl+S` immediate save plus a timestamped full-project backup
 - Per-project selectable backup folder with isolated project subdirectories
 - SQLite metadata with foreign keys and ordered siblings
-- Project-wide search
+- Project-wide search, plus preview-and-confirm replace (regex supported)
 - Plain-text and HTML manuscript export
 - DOCX and EPUB 3 manuscript export in binder order
 - Selective export of any combination of chapters and scenes
@@ -54,6 +54,29 @@ lekhak
 ```
 
 The application requires Python 3.11+ and Qt 6 via PySide6.
+
+## Desktop launchers
+
+After installing the package (steps above), put Lekhak in your
+launcher/menu with the platform script — all are user-level, no root:
+
+```bash
+# Linux: ~/.local/share/applications/lekhak.desktop + hicolor icons
+python3 scripts/install_linux.py            # --check, --uninstall
+```
+
+```powershell
+# Windows: Start Menu shortcut (add -Desktop for the desktop too)
+powershell -ExecutionPolicy Bypass -File scripts\install_windows.ps1
+```
+
+```bash
+# macOS: builds ~/Applications/Lekhak.app (--remove to delete)
+bash scripts/install_macos.sh
+```
+
+`scripts/render_icons.py` bakes `packaging/lekhak.svg` into the PNG/ICO
+artifacts; re-run it after changing the icon.
 
 ## Tests
 

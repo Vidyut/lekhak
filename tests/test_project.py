@@ -218,5 +218,75 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(self.project.documents()[0].kind, "folder")
 
 
+class SearchReplaceTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.project = Project.create(Path(self.temporary.name) / "Novel", "Novel")
+        draft = self.project.documents()[0]
+        self.chapter = self.project.add_document("Chapter One", draft.id, "chapter")
+        self.scene = self.project.add_document("Scene", self.chapter.id, "scene")
+        self.project.write_content(self.scene.id, "<p>Kael opened the airlock twice.</p>")
+        self.project.update_document(self.chapter.id, synopsis="Kael waits")
+
+    def tearDown(self):
+        self.project.close()
+        self.temporary.cleanup()
+
+    def test_replace_literal_is_case_insensitive_by_default(self):
+        counts = self.project.replace("kael", "Vidyut", in_synopses=True)
+        self.assertEqual(counts["replacements"], 2)
+        self.assertEqual(counts["documents"], 2)
+        self.assertIn("Vidyut opened", self.project.plain_text(
+            self.project.read_content(self.scene.id)))
+        self.assertEqual(self.project.documents()[1].synopsis, "Vidyut waits")
+
+    def test_replace_respects_field_flags(self):
+        counts = self.project.replace("Kael", "Vidyut", in_titles=False,
+                                      in_synopses=False)
+        self.assertEqual(counts["titles"] + counts["synopses"], 0)
+        self.assertEqual(counts["replacements"], 1)
+        self.assertIn("Kael waits", self.project.documents()[1].synopsis)
+
+    def test_replace_takes_titles_when_asked(self):
+        counts = self.project.replace("Chapter One", "Chapter 1", in_titles=True)
+        self.assertEqual(counts["titles"], 1)
+        self.assertEqual(self.project.documents()[1].title, "Chapter 1")
+
+    def test_literal_replacement_is_verbatim_with_backslashes(self):
+        self.project.write_content(self.scene.id, "<p>path a\\b</p>")
+        counts = self.project.replace("a\\b", "x\\y")
+        self.assertEqual(counts["replacements"], 1)
+        self.assertIn("x\\y", self.project.read_content(self.scene.id))
+
+    def test_regex_replace_supports_backreferences(self):
+        counts = self.project.replace(r"twice", r"thrice", regex=True)
+        self.assertEqual(counts["replacements"], 1)
+        self.assertIn("thrice", self.project.plain_text(
+            self.project.read_content(self.scene.id)))
+
+    def test_replace_can_target_single_document(self):
+        counts = self.project.replace("the", "a", document_ids={self.scene.id})
+        self.assertEqual(counts["documents"], 1)
+
+    def test_search_snippets_reports_field_and_context(self):
+        hits = self.project.search_snippets("Kael")
+        fields = {field for _doc, field, _snippet in hits}
+        self.assertEqual(fields, {"content", "synopsis"})
+        content_hit = next(s for _d, f, s in hits if f == "content")
+        self.assertIn("opened", content_hit)
+
+    def test_search_snippets_field_filter(self):
+        hits = self.project.search_snippets("Kael", fields={"synopsis"})
+        self.assertTrue(all(field == "synopsis" for _d, field, _s in hits))
+        self.assertEqual(len(hits), 1)
+
+    def test_search_snippets_rejects_bad_regex_loudly(self):
+        with self.assertRaises(Exception):
+            self.project.search_snippets("(", regex=True)
+
+    def test_replace_empty_query_is_noop(self):
+        self.assertEqual(self.project.replace("", "x")["replacements"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

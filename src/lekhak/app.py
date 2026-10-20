@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -10,8 +11,9 @@ from PySide6.QtGui import (
     QTextCharFormat, QTextCursor, QTextListFormat,
 )
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFileDialog,
-    QFontComboBox, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
+    QFileDialog, QFontComboBox, QFormLayout, QHBoxLayout, QInputDialog, QLabel,
+    QLineEdit,
     QMainWindow, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
     QPushButton, QSpinBox, QSplitter, QStatusBar, QStyle, QTabWidget,
     QTableWidget, QTableWidgetItem, QTextEdit, QToolBar, QTreeWidget,
@@ -81,6 +83,112 @@ class FindReplaceDialog(QDialog):
             count += 1
         cursor.endEditBlock()
         QMessageBox.information(self, "Replace All", f"Replaced {count} occurrence(s).")
+
+
+class ProjectReplaceDialog(QDialog):
+    def __init__(self, project: Project, on_goto=None, parent=None) -> None:
+        super().__init__(parent)
+        self.project = project
+        self.on_goto = on_goto
+        self.setWindowTitle("Replace in Project")
+        self.resize(640, 480)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.find_text = QLineEdit()
+        self.replace_text = QLineEdit()
+        form.addRow("Find:", self.find_text)
+        form.addRow("Replace with:", self.replace_text)
+        layout.addLayout(form)
+        options = QHBoxLayout()
+        self.regex_box = QCheckBox("Regular expressions")
+        self.case_box = QCheckBox("Ignore case")
+        self.case_box.setChecked(True)
+        self.titles_box = QCheckBox("Titles")
+        self.titles_box.setChecked(True)
+        self.synopses_box = QCheckBox("Synopses")
+        self.synopses_box.setChecked(True)
+        for box in (self.regex_box, self.case_box, self.titles_box, self.synopses_box):
+            options.addWidget(box)
+        options.addStretch(1)
+        layout.addLayout(options)
+        self.preview = QListWidget()
+        layout.addWidget(self.preview, 1)
+        self.count_label = QLabel("")
+        layout.addWidget(self.count_label)
+        buttons = QDialogButtonBox()
+        self.find_button = buttons.addButton("Find", QDialogButtonBox.ActionRole)
+        self.replace_button = buttons.addButton("Replace All", QDialogButtonBox.ActionRole)
+        buttons.addButton(QDialogButtonBox.Close)
+        layout.addWidget(buttons)
+        self.find_button.clicked.connect(self.refresh_preview)
+        self.replace_button.clicked.connect(self.replace_all)
+        buttons.rejected.connect(self.close)
+        self.find_text.returnPressed.connect(self.refresh_preview)
+        self.preview.itemDoubleClicked.connect(self._goto_hit)
+        for box in (self.regex_box, self.case_box, self.titles_box, self.synopses_box):
+            box.stateChanged.connect(self.refresh_preview)
+
+    def _goto_hit(self, item: QListWidgetItem) -> None:
+        if self.on_goto:
+            self.on_goto(item.data(Qt.UserRole))
+
+    def _fields(self) -> set[str]:
+        fields = {"content"}
+        if self.titles_box.isChecked():
+            fields.add("title")
+        if self.synopses_box.isChecked():
+            fields.add("synopsis")
+        return fields
+
+    def refresh_preview(self) -> None:
+        self.preview.clear()
+        self.count_label.setText("")
+        query = self.find_text.text()
+        if not query:
+            return
+        try:
+            hits = self.project.search_snippets(
+                query, regex=self.regex_box.isChecked(),
+                ignore_case=self.case_box.isChecked(), fields=self._fields(),
+            )
+        except re.error as error:
+            self.count_label.setText(f"Invalid pattern: {error}")
+            return
+        for document, field, snippet in hits:
+            item = QListWidgetItem(f"{document.title} · {field}: {snippet}")
+            item.setData(Qt.UserRole, document.id)
+            self.preview.addItem(item)
+        self.count_label.setText(f"{len(hits)} match(es) (preview capped at 500)")
+
+    def replace_all(self) -> None:
+        query = self.find_text.text()
+        if not query:
+            return
+        try:
+            self.project.search_snippets(query, regex=self.regex_box.isChecked(),
+                                         ignore_case=self.case_box.isChecked())
+        except re.error as error:
+            QMessageBox.warning(self, "Replace in Project", f"Invalid pattern: {error}")
+            return
+        answer = QMessageBox.question(
+            self, "Replace in Project",
+            "Replace every match in the whole project? Undo is not available "
+            "for project-wide replaces.",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        counts = self.project.replace(
+            query, self.replace_text.text(), regex=self.regex_box.isChecked(),
+            ignore_case=self.case_box.isChecked(),
+            in_titles=self.titles_box.isChecked(),
+            in_synopses=self.synopses_box.isChecked(),
+        )
+        QMessageBox.information(
+            self, "Replace in Project",
+            f"Replaced {counts['replacements']} occurrence(s) in "
+            f"{counts['documents']} document(s).",
+        )
+        self.refresh_preview()
 
 
 class MetadataDialog(QDialog):
@@ -469,6 +577,8 @@ class MainWindow(QMainWindow):
         edit_menu.addSeparator()
         self._action(edit_menu, "Find / Replace in Section…", QKeySequence.Find, self.find_replace)
         self._action(edit_menu, "Find in Project", "Ctrl+Shift+F", self.search_box.setFocus)
+        self._action(edit_menu, "Replace in Project…", "Ctrl+Shift+H",
+                     self.replace_in_project)
 
         view_menu = self.menuBar().addMenu("&View")
         self._action(view_menu, "Zoom In", QKeySequence.ZoomIn, lambda: self.editor.zoomIn(1))
@@ -802,6 +912,12 @@ class MainWindow(QMainWindow):
             collect(self.tree.topLevelItem(index))
         return result
 
+    def _select_document(self, document_id: str) -> None:
+        for item in self._all_items():
+            if item.data(0, Qt.UserRole) == document_id:
+                self.tree.setCurrentItem(item)
+                return
+
     def _refresh_corkboard(self) -> None:
         self.corkboard.clear()
         if not self.project:
@@ -1037,6 +1153,15 @@ class MainWindow(QMainWindow):
         cursor.setBlockFormat(QTextBlockFormat())
         self.editor.setTextCursor(cursor)
 
+    def replace_in_project(self) -> None:
+        if not self.project:
+            return
+        self.save_current()
+        dialog = ProjectReplaceDialog(self.project, on_goto=self._select_document,
+                                      parent=self)
+        dialog.exec()
+        self._reload_tree(self.current_id)
+
     def find_replace(self) -> None:
         dialog = FindReplaceDialog(self.editor, self)
         dialog.show()
@@ -1088,6 +1213,7 @@ def main() -> int:
     application = QApplication(sys.argv)
     application.setApplicationName("Lekhak")
     application.setOrganizationName("Lekhak")
+    application.setDesktopFileName("lekhak")  # matches lekhak.desktop on Wayland/GNOME
     window = MainWindow()
     window.show()
     return application.exec()

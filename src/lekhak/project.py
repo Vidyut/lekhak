@@ -217,9 +217,22 @@ class Project:
     def documents(self) -> list[Document]:
         rows = self.db.execute(
             "SELECT id,parent_id,title,synopsis,position,word_target,kind,word_count "
-            "FROM documents ORDER BY parent_id,position"
+            "FROM documents"
         ).fetchall()
-        return [Document(**dict(row)) for row in rows]
+        by_parent: dict[str | None, list[Document]] = {}
+        for row in rows:
+            document = Document(**dict(row))
+            by_parent.setdefault(document.parent_id, []).append(document)
+        ordered: list[Document] = []
+
+        def visit(parent_id: str | None) -> None:
+            for document in sorted(by_parent.get(parent_id, []),
+                                   key=lambda d: d.position):
+                ordered.append(document)
+                visit(document.id)
+
+        visit(None)
+        return ordered
 
     def update_document(self, document_id: str, *, title: str | None = None,
                         synopsis: str | None = None,
@@ -339,6 +352,89 @@ class Project:
             or needle in self.plain_text(self.read_content(document.id)).casefold()
         ]
 
+    @staticmethod
+    def _compile_query(query: str, *, regex: bool, ignore_case: bool) -> re.Pattern:
+        pattern = query if regex else re.escape(query)
+        return re.compile(pattern, re.IGNORECASE if ignore_case else 0)
+
+    def search_snippets(self, query: str, *, regex: bool = False,
+                        ignore_case: bool = True, context: int = 40,
+                        limit: int = 500,
+                        fields: set[str] | None = None) -> list[tuple[Document, str, str]]:
+        """Every match with its field and surrounding text, for previews.
+
+        `fields` filters to any of "content", "title", "synopsis"; None means
+        all three.
+        """
+        if not query:
+            return []
+        compiled = self._compile_query(query, regex=regex, ignore_case=ignore_case)
+        results: list[tuple[Document, str, str]] = []
+        for document in self.documents():
+            candidates = [
+                ("content", self.plain_text(self.read_content(document.id))),
+                ("title", document.title),
+                ("synopsis", document.synopsis),
+            ]
+            for field, text in candidates:
+                if fields is not None and field not in fields:
+                    continue
+                for match in compiled.finditer(text):
+                    start = max(0, match.start() - context)
+                    end = min(len(text), match.end() + context)
+                    prefix = "…" if start > 0 else ""
+                    suffix = "…" if end < len(text) else ""
+                    results.append((document, field, f"{prefix}{text[start:end]}{suffix}"))
+                    if len(results) >= limit:
+                        return results
+        return results
+
+    def replace(self, query: str, replacement: str, *,
+                document_ids: set[str] | None = None,
+                regex: bool = False, ignore_case: bool = True,
+                in_titles: bool = False, in_synopses: bool = False) -> dict:
+        """Replace across the project. Returns a count dict.
+
+        In literal mode the replacement is inserted verbatim; in regex mode
+        it is a normal re.sub pattern (backreferences work). The search runs
+        against stored HTML, so matches interrupted by markup will not hit —
+        the same limitation every plain exporter has.
+        """
+        if not query:
+            return {"replacements": 0, "documents": 0, "titles": 0, "synopses": 0}
+        compiled = self._compile_query(query, regex=regex, ignore_case=ignore_case)
+        targets = [
+            document for document in self.documents()
+            if document_ids is None or document.id in document_ids
+        ]
+        counts = {"replacements": 0, "documents": 0, "titles": 0, "synopses": 0}
+        insert = (lambda _match: replacement) if not regex else replacement
+        for document in targets:
+            touched = False
+            html = self.read_content(document.id)
+            replaced, count = compiled.subn(insert, html)
+            if count:
+                self.write_content(document.id, replaced)
+                counts["replacements"] += count
+                touched = True
+            if in_titles and compiled.search(document.title):
+                new_title, count = compiled.subn(insert, document.title)
+                if count:
+                    self.update_document(document.id, title=new_title)
+                    counts["titles"] += count
+                    counts["replacements"] += count
+                    touched = True
+            if in_synopses and compiled.search(document.synopsis):
+                new_synopsis, count = compiled.subn(insert, document.synopsis)
+                if count:
+                    self.update_document(document.id, synopsis=new_synopsis)
+                    counts["synopses"] += count
+                    counts["replacements"] += count
+                    touched = True
+            if touched:
+                counts["documents"] += 1
+        return counts
+
     def metadata(self, document_id: str) -> dict[str, str]:
         rows = self.db.execute(
             "SELECT key,value FROM document_metadata WHERE document_id=? ORDER BY key",
@@ -449,19 +545,8 @@ class Project:
         return document_id
 
     def ordered_documents(self) -> list[Document]:
-        all_documents = self.documents()
-        children: dict[str | None, list[Document]] = {}
-        for document in all_documents:
-            children.setdefault(document.parent_id, []).append(document)
-        ordered: list[Document] = []
-
-        def visit(parent_id: str | None) -> None:
-            for document in sorted(children.get(parent_id, []), key=lambda d: d.position):
-                ordered.append(document)
-                visit(document.id)
-
-        visit(None)
-        return ordered
+        # documents() already walks the tree in binder order
+        return self.documents()
 
     def _export_documents(self, selected_ids: set[str] | None) -> list[Document]:
         documents = [d for d in self.ordered_documents() if d.kind in EXPORT_KINDS]

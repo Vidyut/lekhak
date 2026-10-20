@@ -43,14 +43,39 @@ until 1.2/2.1.
 - "Draft" becomes a folder, not a chapter. Existing `.lekhak` projects must
   migrate without data loss (a kind migration plus a one-time seed rule).
 
+### 0.2 Desktop launchers (Linux / Windows / macOS) — DONE
+**Request:** easy to launch from the desktop on every platform.
+**Implemented (2026-10-20):** `scripts/install_linux.py` (stdlib only) writes
+`~/.local/share/applications/lekhak.desktop` plus hicolor SVG/PNG icons,
+validates with `desktop-file-validate`, refreshes the desktop/icon caches,
+and supports `--check` / `--uninstall`; Exec prefers the checkout's `.venv`
+console script, then PATH, then `python -m lekhak`. `scripts/install_windows.ps1`
+creates a Start Menu shortcut (optional `-Desktop`, `-Uninstall`) via
+pythonw + `-m lekhak`, icon from `packaging/lekhak.ico`. `scripts/install_macos.sh`
+builds a minimal `~/Applications/Lekhak.app` bundle with launcher and (when
+iconutil is available) an `.icns`. `packaging/lekhak.svg` is the source of
+truth; `scripts/render_icons.py` bakes PNG/ICO/ICNS. `python -m lekhak`
+works via `src/lekhak/__main__.py`, and `main()` sets the desktop file
+name so GNOME/Wayland match the window to the entry.
+
 ## Phase 1 — good software
 
-### 1.1 Search and replace across the project
+### 1.1 Search and replace across the project — DONE
 **Request:** project-wide search *and* replace.
-**Now:** `project.py:295` `search()` finds documents; `app.py:23`
-`FindReplaceDialog` replaces within the open editor only.
-**Add:** project-scope replace (with preview and count), replace-in-title and
-replace-in-synopsis as opt-in checkboxes, regex mode.
+**Implemented (2026-10-20):** Edit → Replace in Project… (Ctrl+Shift+H).
+Preview list shows every match with its document, field (content/title/
+synopsis) and surrounding text, capped at 500; double-click jumps to that
+document. Options: regular expressions, ignore case, include titles,
+include synopses (both opt-in at the API level). Replace asks for
+confirmation and reports replacement/document counts. Backed by
+`Project.replace()` and `Project.search_snippets()`; literal mode inserts
+the replacement verbatim, regex mode supports backreferences.
+Matches are searched in stored HTML, so matches interrupted by markup
+will not hit.
+**Related fix:** `Project.documents()` now returns binder order (tree walk
+by position) instead of SQL order by uuid parent id; `ordered_documents()`
+is now an alias. Search results, the outliner, corkboard and replace all
+iterate in binder order as a result.
 
 ### 1.2 Export templates (yw2html model) — DONE
 **Request:** default template; users add more; select per chapter/scene;
