@@ -322,11 +322,11 @@ Known edges (refine later): the 4-column grid is cramped at the default
 and in search but no longer have UI (the request moves folders to
 project-level fields); project-level fields are not searchable.
 
-### 1.13 Auto-linked related files (title mentions)
+### 1.13 Auto-linked related files (title mentions) — DONE
 **Request:** "auto-linking/tagging — if a file contains words that are an
 EXACT match for another file, it gets linked in metadata as a related file,
 for eg. character or location names. Handy for checking continuity, updating
-character sheets, or even providing an AI additional info about the
+character sheets, or providing an AI additional info about the
 characters/locations in a scene. So if a scene has 'Aaxyl went to Ridnam'
 and there are files aaxyl.html and ridnam.html, they show up as related
 files in the metadata without needing the writer to do it specifically."
@@ -340,6 +340,17 @@ documents mention it — the continuity view. No new tables, no write path,
 nothing to go stale: titles are the vocabulary and the scan runs on view.
 Scope check before building: do not turn mentions into stored links or
 editable relations — that would be a second source of truth for prose.
+**Implemented (2026-10-20):** `Project.related_documents(id)` returns the
+two directions from one pass — titles found in this document's plain text
+("Mentions") and documents whose text contains this document's title
+("Mentioned by") — with word-character boundaries so "Rid" never matches
+inside "Ridnam", casefolded both sides, self excluded, every kind's title
+in the vocabulary. Plain texts are cached against file mtime+size on the
+Project instance, so the scan re-parses only what was written and a stale
+string cannot outlive a save. The inspector shows a collapsible
+"Related files" tree (hidden with no matches), and clicking a child jumps
+like a wiki link — save first, then switch. Nothing is stored: retitle or
+rewrite and the next view is correct.
 
 ## Phase 2 — books, variants, and conditional content
 

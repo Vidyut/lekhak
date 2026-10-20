@@ -160,6 +160,42 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(self.project.project_metadata(),
                          {"Verse": ("Three", "text", [])})
 
+    def test_related_documents_matches_whole_words_in_both_directions(self):
+        root = self.project.documents()[0]
+        aaxyl = self.project.add_document("Aaxyl", root.id, "note")
+        ridnam = self.project.add_document("Ridnam", root.id, "note")
+        scene = self.project.add_document("Scene One", root.id, "scene")
+        self.project.write_content(scene.id, "<p>Aaxyl went to ridnam.</p>")
+        self.project.write_content(ridnam.id, "<p>Aaxyl's home port.</p>")
+
+        mentions, mentioned_by = self.project.related_documents(scene.id)
+        # Binder order, case-insensitive: "ridnam" in prose matches Ridnam.
+        self.assertEqual([d.id for d in mentions], [aaxyl.id, ridnam.id])
+        self.assertEqual(mentioned_by, [])     # nobody's prose says "Scene One"
+
+        mentions, mentioned_by = self.project.related_documents(aaxyl.id)
+        self.assertEqual(mentions, [])         # Aaxyl's file is empty
+        self.assertEqual([d.id for d in mentioned_by], [ridnam.id, scene.id])
+
+        # Whole word: the title "Rid" must not match inside "Ridnam".
+        rid = self.project.add_document("Rid", root.id, "note")
+        _mentions, mentioned_by = self.project.related_documents(rid.id)
+        self.assertEqual(mentioned_by, [])
+
+    def test_related_scan_reflects_a_rewrite(self):
+        root = self.project.documents()[0]
+        aaxyl = self.project.add_document("Aaxyl", root.id, "note")
+        scene = self.project.add_document("Scene One", root.id, "scene")
+        self.project.write_content(scene.id, "<p>Aaxyl went to Ridnam.</p>")
+        self.assertEqual(
+            [d.id for d in self.project.related_documents(scene.id)[0]],
+            [aaxyl.id],
+        )
+
+        self.project.write_content(scene.id, "<p>Quiet now.</p>")
+
+        self.assertEqual(self.project.related_documents(scene.id), ([], []))
+
     def test_date_metadata_type_and_value_are_persisted(self):
         document = self.project.documents()[0]
         self.project.set_metadata(

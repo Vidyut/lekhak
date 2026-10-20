@@ -1066,6 +1066,21 @@ class MainWindow(QMainWindow):
         metadata_buttons.addStretch()
         inspector_layout.addLayout(metadata_buttons)
 
+        # Related files (1.13): a fresh whole-word title scan shown on
+        # view — never stored — as two groups, this document's mentions
+        # and the documents that mention it. Hidden until a scan finds
+        # something.
+        self.related_tree = QTreeWidget()
+        self.related_tree.setHeaderHidden(True)
+        self.related_tree.itemClicked.connect(self._related_clicked)
+        self.related_section = QWidget()
+        related_layout = QVBoxLayout(self.related_section)
+        related_layout.setContentsMargins(0, 0, 0, 0)
+        related_layout.addWidget(QLabel("Related files"))
+        related_layout.addWidget(self.related_tree)
+        self.related_section.setVisible(False)
+        inspector_layout.addWidget(self.related_section)
+
         splitter = QSplitter()
         splitter.addWidget(self.tree)
         splitter.addWidget(self.views)
@@ -1186,6 +1201,7 @@ class MainWindow(QMainWindow):
         self.metadata_table.setEnabled(enabled)
         self.metadata_add_button.setEnabled(enabled)
         self.metadata_remove_button.setEnabled(enabled)
+        self.related_tree.setEnabled(enabled)
 
     def new_project(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Choose project location")
@@ -1237,6 +1253,7 @@ class MainWindow(QMainWindow):
         # unselected): seed the metadata panel anyway — root means the
         # project's own fields.
         self._populate_metadata_table()
+        self._refresh_related()
 
     def _restore_cursor(self) -> None:
         """Session resume (1.9): put the caret back where the last save left it.
@@ -1533,6 +1550,7 @@ class MainWindow(QMainWindow):
             self.synopsis.clear()
             self.target.setValue(0)
         self._populate_metadata_table()
+        self._refresh_related()
         self.loading = False
         self._update_word_count()
         self._refresh_corkboard()
@@ -1607,6 +1625,39 @@ class MainWindow(QMainWindow):
             )
         else:
             self.project.set_metadata(self._metadata_target, values, value_types, options)
+
+    def _refresh_related(self) -> None:
+        """Fill the Related files section (1.13): a fresh scan, never
+        stored. Two groups — titles found in this document, and
+        documents containing this one's title — each shown only when it
+        has members; no matches collapses the whole section.
+        """
+        self.related_tree.clear()
+        mentions: list = []
+        mentioned_by: list = []
+        if self.project and self.current_id:
+            mentions, mentioned_by = self.project.related_documents(self.current_id)
+        for label, documents in (("Mentions", mentions), ("Mentioned by", mentioned_by)):
+            if not documents:
+                continue
+            group = QTreeWidgetItem([label])
+            for document in documents:
+                child = QTreeWidgetItem([f"{document.title}  ({document.kind})"])
+                child.setData(0, Qt.UserRole, document.id)
+                child.setToolTip(0, document.kind.capitalize())
+                group.addChild(child)
+            self.related_tree.addTopLevelItem(group)
+            group.setExpanded(True)
+        self.related_section.setVisible(self.related_tree.topLevelItemCount() > 0)
+
+    def _related_clicked(self, item, _column) -> None:
+        """Jump to a related document — group headers carry no id, so a
+        click on "Mentions" itself does nothing. Same jump as a wiki
+        link: save here first, then switch."""
+        document_id = item.data(0, Qt.UserRole)
+        if document_id:
+            self.save_current()
+            self._select_document(document_id)
 
     def save_current(self) -> None:
         if not self.project or not self.current_id or self.loading:

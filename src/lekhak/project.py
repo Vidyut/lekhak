@@ -94,6 +94,9 @@ class Project:
         self.backups_dir = self.root / "backups"
         self.db_path = self.root / "project.sqlite3"
         self.connection: sqlite3.Connection | None = None
+        # id -> ((mtime_ns, size), plain text): the related-files scan
+        # re-reads every document on view; see _plain_texts().
+        self._plain_text_cache: dict[str, tuple[tuple[int, int], str]] = {}
 
     @classmethod
     def create(cls, root: Path, title: str = "Untitled Project") -> "Project":
@@ -627,6 +630,79 @@ class Project:
             return f"[[{text}]]" if text else ""
 
         return self.LINK_HREF_RE.sub(restore, html)
+
+    def related_documents(self, document_id: str) -> tuple[list[Document], list[Document]]:
+        """Whole-word title matches around one document (1.13), both ways.
+
+        ``mentions``: other documents whose titles appear in this one's
+        text — the scene's characters and locations. ``mentioned_by``:
+        other documents whose text contains this one's title — the
+        continuity view on a character sheet.
+
+        Computed fresh from titles and prose on every call: nothing is
+        stored, so a retitle or an edit heals itself and no relation can
+        go stale. Whole-word phrase match (word-character boundaries,
+        case-insensitive) so "Rid" never matches inside "Ridnam"; the
+        document itself is excluded. Every kind of title is vocabulary —
+        chapters and folders may be names a scene mentions too.
+        """
+        documents = self.documents()
+        target = next((d for d in documents if d.id == document_id), None)
+        if target is None:
+            return [], []
+        texts = self._plain_texts()
+        own_text = texts.get(document_id, "")
+        own_title = target.title.strip().casefold()
+        mentions: list[Document] = []
+        mentioned_by: list[Document] = []
+        for document in documents:
+            if document.id == document_id:
+                continue
+            title = document.title.strip().casefold()
+            if title and self._mentions_phrase(own_text, title):
+                mentions.append(document)
+            if own_title and self._mentions_phrase(texts.get(document.id, ""), own_title):
+                mentioned_by.append(document)
+        return mentions, mentioned_by
+
+    def _plain_texts(self) -> dict[str, str]:
+        """Every document's plain text, cached against file mtime and size.
+
+        The related-files scan (1.13) needs all texts on every selection
+        change; stat is microseconds while re-parsing is not. Keyed on
+        mtime+size, so a save invalidates its own entry — the file stays
+        the only source of truth and a stale string cannot survive a
+        write. Entries for deleted documents may linger unread; they cost
+        nothing and the cache dies with this Project instance.
+        """
+        texts: dict[str, str] = {}
+        for document in self.documents():
+            path = self.content_path(document.id)
+            try:
+                stat = path.stat()
+                stamp = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                texts[document.id] = ""
+                continue
+            cached = self._plain_text_cache.get(document.id)
+            if cached is None or cached[0] != stamp:
+                cached = (stamp, self.plain_text(path.read_text(encoding="utf-8")))
+                self._plain_text_cache[document.id] = cached
+            texts[document.id] = cached[1]
+        return texts
+
+    @staticmethod
+    def _mentions_phrase(text: str, phrase: str) -> bool:
+        r"""Whole-word case-insensitive ``phrase`` inside ``text``.
+
+        (?<!\w)/(?!\w) rather than \b so titles that start or end with
+        punctuation still bind correctly, and both sides are casefolded
+        so a match survives every case difference the writer typed.
+        """
+        if not text or not phrase:
+            return False
+        pattern = r"(?<!\w)" + re.escape(phrase.casefold()) + r"(?!\w)"
+        return re.search(pattern, text.casefold()) is not None
 
     def search(self, query: str) -> list[Document]:
         """Documents whose title, synopsis or body text contains ``query``.
