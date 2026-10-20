@@ -142,6 +142,32 @@ case), yWriter 7 `.yw7` import (the author's own workflow), Scrivener
 `.scriv` (XML) import as a stretch goal. Export already covers txt/html/
 docx/epub; PDF and a clean Markdown export join it.
 
+### 2.4 Tracked edits with accept/reject, and AI as a source of them
+**Request:** "eventually, AI integration and tracked edits to
+accept/reject."
+
+**Layer 1 — tracked changes (no AI required).** Word-style revision marks
+inside the editor: insertions and deletions carry a change id, an author
+label, and a timestamp, rendered inline (underline/colour for inserts,
+strike for deletes). Every change is addressable so it can be accepted or
+rejected individually or in a batch. Storage: the HTML keeps the marked-up
+form (so a project remains transparent — a plain text editor still sees the
+words), with change metadata in a `revisions` table. Accept bakes the text
+and drops the mark; reject removes it and restores what was there. A
+session ("revision pass") groups related changes so a whole pass can be
+accepted or rejected at once. Interacts with snapshots: taking a snapshot
+while changes are pending stores the marked-up state.
+
+**Layer 2 — AI integration.** A provider-agnostic client (local Ollama or
+any OpenAI-compatible endpoint; keys in the app config, never in the
+project). AI output never lands in the document directly — it always
+arrives as a tracked-change session the writer accepts or rejects, which is
+exactly what layer 1 provides. First uses: continue-the-scene from the
+cursor, proofread/simplify the selection, generate a synopsis from
+selection, and answer questions about the binder (POV consistency, scene
+count, word targets). Context is assembled from the export pipeline, so
+what the model sees is what a compile would see.
+
 ## Phase 3 — wish-fulfilling fairy software
 
 ### 3.1 Text to speech
