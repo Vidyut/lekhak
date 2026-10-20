@@ -182,13 +182,19 @@ support. Palette link colour is read via `.color().name()` — `palette().link()
 returns a QBrush. `plain_text()` strips `[[ ]]`, keeping link markers out of
 word counts and exports.
 
-### 1.6 DOCX/PDF page control
+### 1.6 DOCX page control
 **Request:** mark chapters/scenes as starting on a right or left page; insert
 a blank page when the flow lands on the wrong side.
 **Add:** a per-document `page_break` property (`auto`, `left`, `right`,
 `next-odd`, `next-even`); DOCX export emits the right
-`WD_SECTION_START` / page break; PDF via LibreOffice headless or a direct
-writer, chosen at export time.
+`WD_SECTION_START` / page break.
+**PDF is explicitly deferred, not merely missing.** Decision (2026-10-20):
+no bundled PDF engine, no LibreOffice or pandoc detection, no new
+dependency. The DOCX export is the exact artifact — anyone who needs a
+PDF takes that DOCX through whatever converter they already have. This
+makes DOCX fidelity the priority for this item and for 1.7's page
+numbers; a future PDF export, if it ever happens, is a thin wrapper over
+this DOCX, not a parallel renderer.
 
 ### 1.7 Table of contents — DONE (PDF part waits on the PDF writer)
 **Request:** TOC with links for ebook, links and/or page numbers for PDF,
