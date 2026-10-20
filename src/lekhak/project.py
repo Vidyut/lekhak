@@ -92,6 +92,19 @@ DEFAULT_LINK_POLICY = "plain-text"
 # anchored at each heading's bookmark.
 LINK_TOKEN_RE = re.compile(r"\x02([^\x03\x04]+)\x03([^\x04]*)\x04")
 
+# Tracked-change sentinel spans (2.4). Qt's toHtml round-trips CSS on
+# spans but drops custom format properties, so the marks ride on a
+# sentinel background colour the compile pass recognises; the live ids
+# re-attach by span order on load (see Revision.sequence).
+REVISION_INSERT_BG = "#cfe4ff"
+REVISION_DELETE_BG = "#ffd6d6"
+DELETE_SPAN_RE = re.compile(
+    r'<span\b[^>]*background-color:\s*' + REVISION_DELETE_BG
+    + r'[^>]*>.*?</span>', re.I | re.S)
+INSERT_SPAN_RE = re.compile(
+    r'(<span\b[^>]*background-color:\s*' + REVISION_INSERT_BG
+    + r'[^>]*>)(.*?)(</span>)', re.I | re.S)
+
 
 def _template_numbers(is_template: bool, chapter_number: int,
                       scene_number: int, words_total: int) -> dict[str, str]:
@@ -139,6 +152,25 @@ class Snapshot:
     document_id: str
     name: str
     created_at: str
+
+
+@dataclass(frozen=True)
+class Revision:
+    """One pending tracked change (2.4).
+
+    A row exists exactly while the mark is unresolved; accept/reject
+    deletes it. ``session_id`` groups the changes of one revision pass,
+    ``sequence`` is the per-document creation order — the order spans
+    re-attach in on load, since Qt's HTML round-trip drops the live
+    format properties that carried the ids.
+    """
+    id: str
+    document_id: str
+    session_id: str
+    kind: str  # "insert" or "delete"
+    author: str
+    created_at: str
+    sequence: int
 
 
 class Project:
@@ -221,6 +253,17 @@ class Project:
             );
             CREATE INDEX IF NOT EXISTS snapshot_document_date
                 ON snapshots(document_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS revisions (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                author TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                sequence INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS revision_document_sequence
+                ON revisions(document_id, sequence);
             CREATE TABLE IF NOT EXISTS document_metadata (
                 document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
                 key TEXT NOT NULL,
@@ -653,12 +696,28 @@ class Project:
         self.db.commit()
 
     @staticmethod
+    def accepted_html(html: str) -> str:
+        """The manuscript as accept-all would leave it (2.4).
+
+        Delete-marked text removed, insert-marked text kept with its
+        words and without the mark. Word counts, search and every export
+        see this — the stored file keeps its marks until the writer
+        accepts or rejects (manuscripts-precious: nothing rewrites the
+        stored form as a side effect).
+        """
+        html = DELETE_SPAN_RE.sub("", html)
+        return INSERT_SPAN_RE.sub(r"\2", html)
+
+    @staticmethod
     def plain_text(html: str) -> str:
         """Strip markup for word counts, search and plain-text export.
 
         Also unwraps ``[[wiki links]]`` to their bare title, so link
-        markers are never counted as words or leaked into an export.
+        markers are never counted as words or leaked into an export, and
+        renders pending tracked changes (2.4) as accept-all would: the
+        words of an insertion, never the words of a deletion.
         """
+        html = Project.accepted_html(html)
         text = re.sub(r"<(br|/p|/div|/h[1-6])\b[^>]*>", "\n", html, flags=re.I)
         text = re.sub(r"\[\[([^\[\]]+)\]\]", r"\1", text)
         return unescape(TAG_RE.sub("", text)).strip()
@@ -1181,6 +1240,89 @@ class Project:
         self.update_document(document_id, synopsis=synopsis)
         return document_id
 
+    # --- tracked changes (2.4) ---------------------------------------------
+    # Pending rows only: accept/reject deletes the row, the mark in the
+    # HTML is the other half of the pair, and reconcile_revisions prunes
+    # whichever half an undo left behind.
+
+    def add_revision(self, document_id: str, session_id: str, kind: str,
+                     author: str, sequence: int) -> Revision:
+        revision = Revision(
+            id=uuid.uuid4().hex,
+            document_id=document_id,
+            session_id=session_id,
+            kind=kind,
+            author=author,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            sequence=sequence,
+        )
+        self.db.execute(
+            "INSERT INTO revisions"
+            "(id,document_id,session_id,kind,author,created_at,sequence)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (revision.id, revision.document_id, revision.session_id,
+             revision.kind, revision.author, revision.created_at,
+             revision.sequence),
+        )
+        self.db.commit()
+        return revision
+
+    def revisions(self, document_id: str) -> list[Revision]:
+        """One document's pending changes, in creation order."""
+        rows = self.db.execute(
+            "SELECT id,document_id,session_id,kind,author,created_at,sequence"
+            " FROM revisions WHERE document_id=? ORDER BY sequence",
+            (document_id,),
+        ).fetchall()
+        return [Revision(*row) for row in rows]
+
+    def revision_sessions(self, document_id: str) -> list[dict]:
+        """Pending revision passes for one document, oldest first — what
+        the accept/reject dialog lists. Each entry carries the session id,
+        the author, the timestamp of its first change and its size."""
+        rows = self.db.execute(
+            "SELECT session_id, author, MIN(created_at), COUNT(*)"
+            " FROM revisions WHERE document_id=?"
+            " GROUP BY session_id ORDER BY MIN(created_at)",
+            (document_id,),
+        ).fetchall()
+        return [
+            {"session_id": row[0], "author": row[1], "created_at": row[2],
+             "count": row[3]}
+            for row in rows
+        ]
+
+    def remove_revisions(self, revision_ids: list[str]) -> None:
+        """Delete pending rows (the change was accepted or rejected)."""
+        if not revision_ids:
+            return
+        self.db.executemany(
+            "DELETE FROM revisions WHERE id=?", [(rid,) for rid in revision_ids])
+        self.db.commit()
+
+    def reconcile_revisions(self, document_id: str) -> None:
+        """Drop pending rows whose marks no longer exist (2.4).
+
+        Undo/redo can remove marked text without telling the revisions
+        table; after a save the stored HTML is the truth. Count the
+        insert and delete spans, keep the first N rows of each kind in
+        sequence order, drop the rest. The reverse mismatch — marks with
+        no rows — leaves those spans rendering but unaddressable until
+        the next accept/reject pass; the table never invents rows.
+        """
+        html = self.read_content(document_id)
+        limits = {
+            "insert": len(INSERT_SPAN_RE.findall(html)),
+            "delete": len(DELETE_SPAN_RE.findall(html)),
+        }
+        seen = {"insert": 0, "delete": 0}
+        doomed: list[str] = []
+        for revision in self.revisions(document_id):
+            seen[revision.kind] += 1
+            if seen[revision.kind] > limits.get(revision.kind, 0):
+                doomed.append(revision.id)
+        self.remove_revisions(doomed)
+
     def ordered_documents(self) -> list[Document]:
         # documents() already walks the tree in binder order
         return self.documents()
@@ -1523,8 +1665,11 @@ class Project:
         matching the editor, which never auto-opens a substring
         candidate) follows the source's strip policy. Runs on raw read
         content, before plain_text; a second pass finds no markers and is
-        a no-op.
+        a no-op. The compile-time content pass also renders pending
+        tracked changes (2.4) as accept-all would first, so exports never
+        print revision marks.
         """
+        content = self.accepted_html(content)
         if not self.WIKI_LINK_RE.search(content):
             return content
 

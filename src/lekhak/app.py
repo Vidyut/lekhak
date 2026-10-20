@@ -37,6 +37,7 @@ import re
 import sys
 from html import escape
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import (
     QDate, QEvent, QItemSelectionModel, QSize, QSettings, Qt, QTimer, QUrl,
@@ -59,6 +60,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from . import revisions
 from .importer import dump_books, import_all_books, parse_dump
 from .project import DEFAULT_LINK_POLICY, EXPORT_KINDS, Project
 from .templates import (
@@ -243,7 +245,8 @@ LINK_POLICY_CHOICES = (
 
 class PreferencesDialog(QDialog):
     def __init__(self, font_size: int, paste: dict[str, bool],
-                 link_policy: str | None = None, parent=None) -> None:
+                 link_policy: str | None = None,
+                 revision_author: str = "Author", parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Preferences")
         layout = QVBoxLayout(self)
@@ -264,6 +267,10 @@ class PreferencesDialog(QDialog):
         # discoverable before a book exists.
         self.link_policy_box.setEnabled(link_policy is not None)
         form.addRow("Unpublished links:", self.link_policy_box)
+        # Tracked changes (2.4): the Word-style byline on each change.
+        self.author_edit = QLineEdit(revision_author)
+        self.author_edit.setMaxLength(80)
+        form.addRow("Change author label:", self.author_edit)
         layout.addLayout(form)
         note = QLabel(
             "Applies to menus, binder, corkboard, outliner and panels. "
@@ -660,6 +667,51 @@ class ColumnPickerDialog(QDialog):
         return chosen
 
 
+class RevisionPassesDialog(QDialog):
+    """List one document's pending revision passes and accept or reject
+    the selected one whole (2.4 — v1 granularity is document + pass;
+    per-change addressing ships with the data but gets no list yet)."""
+
+    def __init__(self, sessions: list[dict], parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Revision Passes")
+        self.chosen_accept = True
+        self._session_id = ""
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Accept or reject a whole pass:"))
+        self.list = QListWidget()
+        for session in sessions:
+            stamp = session["created_at"][:19].replace("T", " ")
+            item = QListWidgetItem(
+                f"{session['count']} change(s) — {session['author']} — {stamp}")
+            item.setData(Qt.UserRole, session["session_id"])
+            self.list.addItem(item)
+        if self.list.count():
+            self.list.setCurrentRow(self.list.count() - 1)
+        layout.addWidget(self.list)
+        row = QHBoxLayout()
+        accept = QPushButton("Accept")
+        accept.clicked.connect(self._accept_pass)
+        reject = QPushButton("Reject")
+        reject.clicked.connect(self._reject_pass)
+        row.addWidget(accept)
+        row.addWidget(reject)
+        row.addStretch()
+        layout.addLayout(row)
+
+    def selected_session(self) -> str:
+        item = self.list.currentItem()
+        return str(item.data(Qt.UserRole)) if item else ""
+
+    def _accept_pass(self) -> None:
+        self.chosen_accept = True
+        self.accept()
+
+    def _reject_pass(self) -> None:
+        self.chosen_accept = False
+        self.accept()
+
+
 def load_paste_prefs() -> dict[str, bool]:
     """The paste policy from Preferences, read on every paste.
 
@@ -673,6 +725,13 @@ def load_paste_prefs() -> dict[str, bool]:
         "inline": settings.value("paste/inline", True, type=bool),
         "alignment": settings.value("paste/alignment", True, type=bool),
     }
+
+
+def revision_author() -> str:
+    """The label stamped on each tracked change (2.4), live from
+    Preferences like the paste policy. Single writer today; AI sessions
+    pass their own label instead of reading this."""
+    return str(QSettings().value("revisions/author", "Author")) or "Author"
 
 
 def _scrub_char_format(source: QTextCharFormat, keep_fonts: bool,
@@ -859,17 +918,225 @@ class LinkEditor(QTextEdit):
 
     internal_link_clicked = Signal(str)
 
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        # Tracked-changes state (2.4). tracking is the Edit-menu toggle,
+        # the session id starts a fresh revision pass every time the
+        # toggle goes on, and the open-insert pair coalesces consecutive
+        # typing into one change until the caret leaves its end.
+        self.tracking = False
+        self.revision_project: Project | None = None
+        self.revision_document_id: str | None = None
+        self._session_id = ""
+        self._open_insert_id: str | None = None
+        self._open_insert_end = -1
+        self.cursorPositionChanged.connect(self._close_open_insert_if_moved)
+
+    # --- tracked changes (2.4) ---------------------------------------------
+
+    def begin_document(self, project: Project | None, document_id) -> None:
+        """Point the editor at a document and re-attach pending revision
+        ids. Called right after setHtml: the stored file carries only the
+        sentinel styles, so ids re-attach by span order here (and the
+        scene's other half, reconcile, runs on save)."""
+        self.revision_project = project
+        self.revision_document_id = document_id
+        self._close_open_insert()
+        if project is not None and document_id:
+            revisions.attach_ids(self.document(),
+                                 project.revisions(document_id))
+
+    def set_tracking(self, enabled: bool) -> None:
+        """Edit → Track Changes. Each turn-on starts a new revision pass,
+        so the passes dialog groups by intent rather than by eternity."""
+        self.tracking = bool(enabled)
+        self._close_open_insert()
+        if enabled:
+            self._session_id = uuid4().hex
+
+    def _revision_live(self) -> bool:
+        return bool(self.tracking and self.revision_project
+                    and self.revision_document_id)
+
+    def _close_open_insert(self) -> None:
+        self._open_insert_id = None
+        self._open_insert_end = -1
+
+    def _close_open_insert_if_moved(self) -> None:
+        if self._open_insert_id is None:
+            return
+        if (self.textCursor().position() != self._open_insert_end
+                or self.textCursor().hasSelection()):
+            self._close_open_insert()
+
+    def _add_revision(self, kind: str, session_id: str = "",
+                      author: str = ""):
+        rows = self.revision_project.revisions(self.revision_document_id)
+        sequence = max((row.sequence for row in rows), default=0) + 1
+        return self.revision_project.add_revision(
+            self.revision_document_id,
+            session_id or self._session_id,
+            kind,
+            author or revision_author(),
+            sequence,
+        )
+
+    def _mark_range_insert(self, start: int, end: int,
+                           session_id: str = "", author: str = "") -> None:
+        revision = self._add_revision(revisions.KIND_INSERT, session_id,
+                                      author)
+        cursor = QTextCursor(self.document())
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.KeepAnchor)
+        cursor.mergeCharFormat(revisions.revision_char_format(
+            revisions.KIND_INSERT, revision.id))
+
+    def _delete_selection_tracked(self, cursor: QTextCursor) -> None:
+        """Replace a selection under tracking: insert/delete marks inside
+        it are removed outright (their words were never final), each
+        unmarked run becomes one delete change of its own."""
+        document = self.document()
+        start, end = cursor.selectionStart(), cursor.selectionEnd()
+        cursor.beginEditBlock()
+        doomed: list[str] = []
+        for kind, revision_id, position, length in reversed(
+                revisions.segments(document, start, end)):
+            if kind is None:
+                revision = self._add_revision(revisions.KIND_DELETE)
+                marked = QTextCursor(document)
+                marked.setPosition(position)
+                marked.setPosition(position + length,
+                                   QTextCursor.KeepAnchor)
+                marked.mergeCharFormat(revisions.revision_char_format(
+                    revisions.KIND_DELETE, revision.id))
+            else:
+                revisions.remove_text(document, position, length)
+                if revision_id:
+                    doomed.append(revision_id)
+        cursor.endEditBlock()
+        self.revision_project.remove_revisions(doomed)
+        self._close_open_insert()
+        # Collapse the widget caret onto the range start: the marking
+        # cursors above never move it, and a still-selected range would
+        # make the next keystroke run this whole pass a second time.
+        collapsed = QTextCursor(document)
+        collapsed.setPosition(start)
+        self.setTextCursor(collapsed)
+
+    def _type_tracked(self, text: str) -> None:
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            self._delete_selection_tracked(cursor)
+            cursor = self.textCursor()
+        kind, revision_id, _position = revisions.char_at(
+            self.document(), cursor.position() - 1)
+        if (self._open_insert_id and kind == revisions.KIND_INSERT
+                and revision_id == self._open_insert_id
+                and cursor.position() == self._open_insert_end):
+            # Consecutive typing extends one change: the caret format
+            # still carries the mark, so plain insertText inherits it.
+            # The end is updated *before* the insert because the caret
+            # signal fires inside insertText, mid-move, and would close
+            # the burst against a stale end.
+            self._open_insert_end = cursor.position() + len(text)
+            cursor.insertText(text)
+            return
+        revision = self._add_revision(revisions.KIND_INSERT)
+        self._open_insert_id = revision.id
+        self._open_insert_end = cursor.position() + len(text)
+        cursor.insertText(text, revisions.revision_char_format(
+            revisions.KIND_INSERT, revision.id, cursor.charFormat()))
+
+    def _erase_tracked(self, backward: bool) -> None:
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            self._delete_selection_tracked(cursor)
+            return
+        position = cursor.position()
+        if backward and position == 0:
+            return
+        target = position - 1 if backward else position
+        kind, revision_id, char_position = revisions.char_at(
+            self.document(), target)
+        cursor.setPosition(char_position)
+        cursor.setPosition(char_position + 1, QTextCursor.KeepAnchor)
+        if kind is None:
+            revision = self._add_revision(revisions.KIND_DELETE)
+            cursor.mergeCharFormat(revisions.revision_char_format(
+                revisions.KIND_DELETE, revision.id))
+            return
+        # Erasing marked text removes it outright: an insertion being
+        # undone never existed, a deletion being erased stays erased.
+        cursor.removeSelectedText()
+        if revision_id and not revisions.find_id(self.document(),
+                                                  revision_id):
+            self.revision_project.remove_revisions([revision_id])
+        if revision_id == self._open_insert_id:
+            self._close_open_insert()
+
+    def insert_tracked_text(self, text: str) -> None:
+        """Menu-driven inserts (Insert Link…) go through the mark path
+        when tracking is on, so structural inserts are tracked too."""
+        if self._revision_live() and text:
+            self._type_tracked(text)
+        else:
+            self.textCursor().insertText(text)
+
+    def apply_tracked_replacement(self, start: int, end: int,
+                                  new_text: str, session_id: str,
+                                  author: str) -> None:
+        """The AI path (2.4 layer 2): replace [start, end) as one
+        tracked change pair under a given session and author, regardless
+        of the tracking toggle — AI output never lands directly. Old
+        unmarked text stays visible as a deletion; the new words go in
+        front of it as an insertion, so accept keeps the new and reject
+        restores the old exactly."""
+        document = self.document()
+        cursor = QTextCursor(document)
+        cursor.beginEditBlock()
+        doomed: list[str] = []
+        for kind, revision_id, position, length in reversed(
+                revisions.segments(document, start, end)):
+            if kind is None:
+                revision = self._add_revision(revisions.KIND_DELETE,
+                                              session_id, author)
+                marked = QTextCursor(document)
+                marked.setPosition(position)
+                marked.setPosition(position + length,
+                                   QTextCursor.KeepAnchor)
+                marked.mergeCharFormat(revisions.revision_char_format(
+                    revisions.KIND_DELETE, revision.id))
+            else:
+                revisions.remove_text(document, position, length)
+                if revision_id:
+                    doomed.append(revision_id)
+        if new_text:
+            revision = self._add_revision(revisions.KIND_INSERT,
+                                          session_id, author)
+            insert_at = QTextCursor(document)
+            insert_at.setPosition(start)
+            insert_at.insertText(new_text, revisions.revision_char_format(
+                revisions.KIND_INSERT, revision.id))
+        cursor.endEditBlock()
+        self.revision_project.remove_revisions(doomed)
+        self._close_open_insert()
+
     def insertFromMimeData(self, source) -> None:
         """Paste under the Preferences policy; let Qt handle the rest.
 
         Clipboard HTML goes through `sanitize_pasted_html`; plain text,
         images and anything carrying no HTML fall through to Qt's own
-        import, which is already correct for them.
+        import, which is already correct for them. Under tracking the
+        text route is re-routed through insertPlainText so the paste
+        lands as one marked change (2.4).
         """
         if source is None:
             return
         html = source.html() if source.hasHtml() else ""
         if not html:
+            if self._revision_live() and source.hasText():
+                self.insertPlainText(source.text())
+                return
             super().insertFromMimeData(source)
             return
         prefs = load_paste_prefs()
@@ -880,6 +1147,23 @@ class LinkEditor(QTextEdit):
             inline=prefs["inline"],
             alignment=prefs["alignment"],
         ))
+
+    def insertPlainText(self, text: str) -> None:
+        """Plain-text insertion that tracks like typing would (2.4): a
+        replaced selection first, then the whole paste as one insert
+        change — pastes are one act, not one change per word."""
+        if not self._revision_live() or not text:
+            super().insertPlainText(text)
+            return
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            self._delete_selection_tracked(cursor)
+            cursor = self.textCursor()
+        revision = self._add_revision(revisions.KIND_INSERT)
+        cursor.insertText(text, revisions.revision_char_format(
+            revisions.KIND_INSERT, revision.id, cursor.charFormat()))
+        # A paste is its own change; it never coalesces with typing.
+        self._close_open_insert()
 
     def paste_as_plain_text(self) -> None:
         """Ctrl+Shift+V: take only the clipboard's text, never its format.
@@ -925,13 +1209,60 @@ class LinkEditor(QTextEdit):
         insertFragment only moves the cursor it is given, never the
         widget's own, so the caret is handed back explicitly — otherwise
         typing would carry on at the pre-paste spot. One edit block keeps
-        the whole paste a single undo step.
+        the whole paste a single undo step. Under tracking the pasted
+        range becomes one insert change (2.4).
         """
         cursor = self.textCursor()
+        if cursor.hasSelection() and self._revision_live():
+            self._delete_selection_tracked(cursor)
+            cursor = self.textCursor()
         cursor.beginEditBlock()
+        start = cursor.position()
         cursor.insertFragment(QTextDocumentFragment(document))
+        end = cursor.position()
         cursor.endEditBlock()
         self.setTextCursor(cursor)
+        if self._revision_live() and end > start:
+            self._mark_range_insert(start, end)
+            self._close_open_insert()
+
+    def keyPressEvent(self, event) -> None:
+        """Typing, erasing and selection replacement under tracking (2.4).
+
+        Shortcuts and cursor motion fall through to Qt untouched (they
+        just close the open insert burst); a paragraph-mark join at a
+        block boundary also falls through — Qt owns block merging, and
+        marking the invisible separator is not worth fighting it for.
+        """
+        if not self._revision_live():
+            super().keyPressEvent(event)
+            return
+        key = event.key()
+        if event.modifiers() & (Qt.KeyboardModifier.ControlModifier
+                                | Qt.KeyboardModifier.AltModifier
+                                | Qt.KeyboardModifier.MetaModifier):
+            self._close_open_insert()
+            super().keyPressEvent(event)
+            return
+        if key in (Qt.Key_Backspace, Qt.Key_Delete):
+            cursor = self.textCursor()
+            at_boundary = (
+                key == Qt.Key_Backspace and cursor.atBlockStart()
+            ) or (
+                key == Qt.Key_Delete and cursor.atBlockEnd()
+            )
+            if not cursor.hasSelection() and at_boundary:
+                self._close_open_insert()
+                super().keyPressEvent(event)
+                return
+            self._erase_tracked(key == Qt.Key_Backspace)
+            return
+        text = event.text()
+        if text:
+            self._type_tracked(text)
+            return
+        self._close_open_insert()
+        super().keyPressEvent(event)
 
     def mousePressEvent(self, event) -> None:
         anchor = self.anchorAt(event.position().toPoint())
@@ -1304,6 +1635,20 @@ class MainWindow(QMainWindow):
         self._action(edit_menu, "Paste and Keep All Formatting", None,
                      self.editor.paste_keep_all)
         edit_menu.addSeparator()
+        # Tracked changes (2.4): a toggle plus the two bulk resolutions;
+        # the passes dialog sits between them and per-change granularity.
+        self.track_action = QAction("Track Changes", self)
+        self.track_action.setCheckable(True)
+        self.track_action.setShortcut("Ctrl+Shift+T")
+        self.track_action.toggled.connect(self._toggle_tracking)
+        edit_menu.addAction(self.track_action)
+        self._action(edit_menu, "Accept All Changes in Section", None,
+                     self.accept_all_changes)
+        self._action(edit_menu, "Reject All Changes in Section", None,
+                     self.reject_all_changes)
+        self._action(edit_menu, "Revision Passes…", None,
+                     self.revision_passes)
+        edit_menu.addSeparator()
         self._action(edit_menu, "Find / Replace in Section…", QKeySequence.Find, self.find_replace)
         self._action(edit_menu, "Find in Project", "Ctrl+Shift+F", self.search_box.setFocus)
         self._action(edit_menu, "Replace in Project…", "Ctrl+Shift+H",
@@ -1384,6 +1729,7 @@ class MainWindow(QMainWindow):
             self.project.close()
         self.project = project
         self.current_id = None
+        self.editor.begin_document(None, None)
         # Startup resume (1.9): which project was open is app-wide state —
         # written only on a successful switch, read by main() at startup.
         QSettings().setValue("session/lastProject", str(project.root))
@@ -1740,7 +2086,7 @@ class MainWindow(QMainWindow):
         if not accepted:
             return
         self.save_current()
-        cursor.insertText(f"[[{chosen}]]")
+        self.editor.insert_tracked_text(f"[[{chosen}]]")
         self._content_changed()
 
     def _broken_links(self) -> list[str]:
@@ -1760,6 +2106,7 @@ class MainWindow(QMainWindow):
         if self.project and self.current_id:
             document = next(d for d in self.project.documents() if d.id == self.current_id)
             self.editor.setHtml(self.project.read_content(self.current_id))
+            self.editor.begin_document(self.project, self.current_id)
             self._resolve_wiki_links()
             self.synopsis.setPlainText(document.synopsis)
             self.target.setValue(document.word_target)
@@ -1773,6 +2120,7 @@ class MainWindow(QMainWindow):
                 self.views.setCurrentWidget(self.corkboard)
         else:
             self.editor.clear()
+            self.editor.begin_document(self.project, None)
             self.synopsis.clear()
             self.target.setValue(0)
             self.page_break_box.setCurrentIndex(0)
@@ -2005,6 +2353,80 @@ class MainWindow(QMainWindow):
             self.save_current()
             self._select_document(document_id)
 
+    # --- tracked changes (2.4) ---------------------------------------------
+
+    def _toggle_tracking(self, checked: bool) -> None:
+        self.editor.set_tracking(checked)
+        if checked:
+            self.statusBar().showMessage(
+                "Tracking changes — new revision pass started", 3000)
+        else:
+            self.statusBar().showMessage("Tracking changes off", 3000)
+
+    def accept_all_changes(self) -> None:
+        self._resolve_all_changes(accept=True)
+
+    def reject_all_changes(self) -> None:
+        self._resolve_all_changes(accept=False)
+
+    def _resolve_all_changes(self, accept: bool) -> None:
+        """Accept or reject every pending change in the open document.
+        The editor is mutated first, the rows go, then one save writes
+        the resolved form and its recomputed word count."""
+        if not self.project or not self.current_id:
+            return
+        self.save_current()
+        pending = self.project.revisions(self.current_id)
+        if not pending:
+            self.statusBar().showMessage("No pending changes in this section",
+                                         3000)
+            return
+        change_ids = {revision.id for revision in pending}
+        if accept:
+            revisions.apply_accept(self.editor.document(), change_ids)
+        else:
+            revisions.apply_reject(self.editor.document(), change_ids)
+        self.project.remove_revisions(list(change_ids))
+        self.save_current()
+        self._update_word_count()
+        verb = "accepted" if accept else "rejected"
+        self.statusBar().showMessage(
+            f"{len(change_ids)} change(s) {verb}", 3000)
+
+    def revision_passes(self) -> None:
+        """Accept or reject one whole revision pass of this section."""
+        if not self.project or not self.current_id:
+            return
+        self.save_current()
+        sessions = self.project.revision_sessions(self.current_id)
+        if not sessions:
+            self.statusBar().showMessage("No pending changes in this section",
+                                         3000)
+            return
+        dialog = RevisionPassesDialog(sessions, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        session_id = dialog.selected_session()
+        if not session_id:
+            return
+        change_ids = {
+            revision.id
+            for revision in self.project.revisions(self.current_id)
+            if revision.session_id == session_id
+        }
+        if not change_ids:
+            return
+        if dialog.chosen_accept:
+            revisions.apply_accept(self.editor.document(), change_ids)
+        else:
+            revisions.apply_reject(self.editor.document(), change_ids)
+        self.project.remove_revisions(list(change_ids))
+        self.save_current()
+        self._update_word_count()
+        verb = "accepted" if dialog.chosen_accept else "rejected"
+        self.statusBar().showMessage(
+            f"Pass {verb} ({len(change_ids)} change(s))", 3000)
+
     def save_current(self) -> None:
         if not self.project or not self.current_id or self.loading:
             return
@@ -2012,6 +2434,10 @@ class MainWindow(QMainWindow):
         try:
             html = self.project.canonicalize_links(self.editor.toHtml())
             self.project.write_content(self.current_id, html)
+            # Tracked changes (2.4): the stored HTML is the truth after
+            # every save — undo can orphan rows by removing marks behind
+            # the table's back, and this is where that heals.
+            self.project.reconcile_revisions(self.current_id)
             self.project.update_document(
                 self.current_id,
                 synopsis=self.synopsis.toPlainText(),
@@ -2690,7 +3116,7 @@ class MainWindow(QMainWindow):
             if self.project else None
         )
         dialog = PreferencesDialog(current, load_paste_prefs(), link_policy,
-                                   self)
+                                   revision_author(), self)
         if dialog.exec() != QDialog.Accepted:
             return
         size = dialog.size_spin.value()
@@ -2708,6 +3134,8 @@ class MainWindow(QMainWindow):
         settings.setValue("paste/paragraphs", dialog.paste_paragraphs.isChecked())
         settings.setValue("paste/inline", dialog.paste_inline.isChecked())
         settings.setValue("paste/alignment", dialog.paste_alignment.isChecked())
+        settings.setValue("revisions/author",
+                          dialog.author_edit.text().strip() or "Author")
         if self.project:
             self.project.set_setting(
                 "link_policy", dialog.link_policy_box.currentData())
