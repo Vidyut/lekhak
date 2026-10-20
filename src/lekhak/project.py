@@ -261,6 +261,12 @@ class Project:
     def reorder(self, document_id: str, parent_id: str | None, position: int) -> None:
         if parent_id == document_id or self._is_descendant(parent_id, document_id):
             raise ValueError("A document cannot contain itself")
+        # The order of these three UPDATEs is load-bearing. First close the
+        # gap the moved item leaves behind (decrement everything above it
+        # under its old parent), then open a slot at the destination
+        # (increment everything at or after it under the new parent), then
+        # place the item. Reordering them leaves duplicate or gapped
+        # positions, which would silently break sibling order on reload.
         with self.db:
             self.db.execute(
                 "UPDATE documents SET position=position-1 WHERE parent_id IS "
@@ -296,6 +302,11 @@ class Project:
 
     def delete_document(self, document_id: str) -> None:
         descendants = self._descendant_ids(document_id)
+        # Rows are deleted before the content files, deliberately. A crash
+        # between the two leaves orphaned .html files on disk (harmless, and
+        # the backup still has them) rather than a live row pointing at a
+        # file that no longer exists — which would show as a document that
+        # opens blank and cannot be recovered from the project itself.
         with self.db:
             self.db.execute("DELETE FROM documents WHERE id=?", (document_id,))
         for item_id in descendants:
@@ -439,6 +450,12 @@ class Project:
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
     def write_content(self, document_id: str, html: str) -> None:
+        # Writing to a temp file then os.replace so a crash mid-write can
+        # never leave a half-written manuscript: the real file is only ever
+        # swapped in whole. fsync first so the temp file's contents are on
+        # disk before the rename — without it the rename can land on an
+        # empty file after a power loss. Both steps are load-bearing; if
+        # this is ever "simplified", the atomicity guarantee goes with it.
         path = self.content_path(document_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary_name = tempfile.mkstemp(prefix=f".{document_id}-", dir=path.parent)
