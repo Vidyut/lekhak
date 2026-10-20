@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from .importer import dump_books, import_book, parse_dump
 from .project import EXPORT_KINDS, Project
 from .templates import (
     copy_template_set, discover_template_sets, project_template_root,
@@ -1199,6 +1200,11 @@ class MainWindow(QMainWindow):
         self._action(file_menu, "Export DOCX…", None, lambda: self.export("docx"))
         self._action(file_menu, "Export EPUB…", None, lambda: self.export("epub"))
         file_menu.addSeparator()
+        self._action(file_menu, "Import Scrivener Dump…", None,
+                     self.import_scrivener_dump)
+        self._action(file_menu, "Import Scrivener Dump into New Project…", None,
+                     self.import_scrivener_dump_new_project)
+        file_menu.addSeparator()
         self._action(file_menu, "Quit", QKeySequence.Quit, self.close)
 
         edit_menu = self.menuBar().addMenu("&Edit")
@@ -2103,6 +2109,78 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Exported to {selected}", 5000)
             except Exception as error:
                 QMessageBox.critical(self, "Export failed", str(error))
+
+    def _pick_dump_book(self, path: str) -> tuple[list, str] | None:
+        """Parse a dump and ask which of its books to import.
+
+        Returns (raw documents, chosen book title), or None on cancel,
+        parse failure or a dump that declares no books.
+        """
+        try:
+            raw_documents = parse_dump(Path(path))
+            books = dump_books(raw_documents)
+        except Exception as error:
+            QMessageBox.critical(self, "Import failed", str(error))
+            return None
+        if not books:
+            QMessageBox.information(
+                self, "Import", "No books found in that dump."
+            )
+            return None
+        chosen, accepted = QInputDialog.getItem(
+            self, "Import book", "Book:", books, 0, False
+        )
+        if not accepted:
+            return None
+        return raw_documents, chosen
+
+    def import_scrivener_dump(self) -> None:
+        """Import one book from a dump into the open project (2.3)."""
+        if not self.project:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Scrivener dump", "", "Scrivener dump (*.md)"
+        )
+        if not path:
+            return
+        picked = self._pick_dump_book(path)
+        if not picked:
+            return
+        raw_documents, book = picked
+        self.save_current()
+        try:
+            folder_id = import_book(self.project, raw_documents, book)
+        except Exception as error:
+            QMessageBox.critical(self, "Import failed", str(error))
+            return
+        self._reload_tree(select_id=folder_id)
+        self.statusBar().showMessage(f"Imported {book}", 5000)
+
+    def import_scrivener_dump_new_project(self) -> None:
+        """Import one book from a dump as a brand new project (2.3)."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Scrivener dump", "", "Scrivener dump (*.md)"
+        )
+        if not path:
+            return
+        picked = self._pick_dump_book(path)
+        if not picked:
+            return
+        raw_documents, book = picked
+        selected = QFileDialog.getExistingDirectory(
+            self, "Choose location for the new project"
+        )
+        if not selected:
+            return
+        try:
+            project = Project.create(Path(selected) / book, book)
+            folder_id = import_book(project, raw_documents, book)
+            self._switch_project(project)
+            self._reload_tree(select_id=folder_id)
+        except Exception as error:
+            QMessageBox.critical(self, "Could not import project", str(error))
+            return
+        self.statusBar().showMessage(f"Imported {book} into a new project", 5000)
 
     def bold(self) -> None:
         fmt = QTextCharFormat()

@@ -420,6 +420,23 @@ Lekhak for daily writing, and a load fixture for exports/word counts under
 real volume. Further targets: plain Markdown import (pandoc-free), yWriter 7
 `.yw7`, Scrivener `.scriv` XML as stretch. Export already covers txt/html/
 docx/epub; PDF and a clean Markdown export join it.
+**Partial (2026-10-20): Scrivener dump import is done.**
+`lekhak/importer.py` parses the `===DOCUMENT===` format (blank-line header
+fields, multi-line Synopsis values recognised by a known-key whitelist,
+markdown-ish bodies converted to the rich text Lekhak stores: paragraphs,
+`*em*`, `**strong**`, `#` headings) and places documents with an
+ancestor-stack walk — parent-by-title is safe because the dump is
+depth-first binder order, verified against the full 326-document corpus
+with zero orphans. Books appear only as parent titles (folders are never
+in the dump); each import creates the book as a folder and imports one
+book per run, so duplicate chapter titles across books cannot cross-wire.
+Scrivener's unset sentinels ("No Status", "No Label", PoV "None") are
+dropped rather than stored; every real value (PoV, Location, Date, Quote,
+Source, Keywords, custom outline keys) lands in document_metadata, and
+Synopsis lands in the synopsis column. File menu: "Import Scrivener
+Dump…" into the open project, and "…into New Project…" which creates a
+fresh `.lekhak` named after the book. Still open in this item: plain
+Markdown import, `.yw7`, `.scriv` XML, clean Markdown export, PDF.
 
 ### 2.4 Tracked edits with accept/reject, and AI as a source of them
 **Request:** "eventually, AI integration and tracked edits to
