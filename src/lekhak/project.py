@@ -1,4 +1,34 @@
-from __future__ import annotations
+"""Transparent project storage: the model behind the editor.
+
+A project is a ``.lekhak`` directory holding three things, deliberately
+kept separable so a writer can inspect or recover work by hand:
+
+- ``project.sqlite3`` — structure and metadata: the document tree
+  (parent + position), titles, synopses, word counts, snapshots and
+  per-document key/value metadata. Never prose.
+- ``documents/<id>.html`` — one plain HTML file of prose per document.
+  The manuscript itself; readable without this codebase.
+- ``backups/`` — timestamped copies of both, taken on open and on save.
+
+Flow of a document through the system:
+
+    add_document()   creates the row, then writes an empty content file
+    write_content()  atomically replaces that file (temp + fsync + rename)
+                     and refreshes the cached word_count
+    documents()      walks the tree in binder order (parent, then position)
+    delete_document() removes rows first, then files — so a crash leaves
+                     orphans on disk, never a row pointing at nothing
+
+Structure is split from prose on purpose: read_content()/write_content()
+touch only files, everything else touches only rows, and the two are
+reconciled by the document id.
+
+Export path: compile_units() walks the binder in order, renders each
+document through a TemplateSet, and the export_* methods assemble those
+units into the target format. Snapshots are per-document HTML copies,
+taken before destructive operations (split, merge, restore) so any of
+them can be reversed.
+"""
 
 import os
 import json
@@ -29,6 +59,13 @@ EXPORT_KINDS = {"chapter", "scene"}
 
 @dataclass(frozen=True)
 class Document:
+    """One node of the binder tree, as stored in SQLite.
+
+    ``parent_id`` is None for a top-level item; ``position`` is the rank
+    among siblings under that parent, and is what binder order follows.
+    ``kind`` is a label (folder/chapter/scene/note), not structure — any
+    kind may contain any other.
+    """
     id: str
     parent_id: str | None
     title: str
@@ -41,6 +78,7 @@ class Document:
 
 @dataclass(frozen=True)
 class Snapshot:
+    """A named, restorable copy of one document's content and synopsis."""
     id: str
     document_id: str
     name: str
@@ -59,6 +97,7 @@ class Project:
 
     @classmethod
     def create(cls, root: Path, title: str = "Untitled Project") -> "Project":
+        """Make a new project directory and seed it with an empty Draft folder."""
         root = Path(root)
         if root.suffix not in {".lekhak", ".manuscript"}:
             root = root.with_suffix(".lekhak")
@@ -74,6 +113,14 @@ class Project:
         return project
 
     def open(self, create: bool = False) -> None:
+        """Open the database, creating the schema and applying migrations.
+
+        Migrations run inline here: new columns are added with a default,
+        and one-time fixes are guarded by a settings flag so they fire
+        exactly once per project. Any future schema change follows the
+        same pattern — add the column, guard the backfill, never rewrite
+        user content.
+        """
         if not create and not self.db_path.exists():
             raise FileNotFoundError(f"Not a Lekhak project: {self.root}")
         self.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -162,6 +209,7 @@ class Project:
             self.set_setting("word_count_backfill", "1")
 
     def close(self) -> None:
+        """Release the database connection. Safe to call twice."""
         if self.connection:
             self.connection.close()
             self.connection = None
@@ -173,6 +221,7 @@ class Project:
         return self.connection
 
     def set_setting(self, key: str, value: str) -> None:
+        """Store a project-level key (title, backup folder, view prefs)."""
         self.db.execute(
             "INSERT INTO settings(key, value) VALUES(?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -181,13 +230,16 @@ class Project:
         self.db.commit()
 
     def get_setting(self, key: str, default: str = "") -> str:
+        """Read a project-level key, returning ``default`` if unset."""
         row = self.db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         return row[0] if row else default
 
     def set_backup_folder(self, folder: Path | None) -> None:
+        """Point backups outside the project, or back to the default with None."""
         self.set_setting("backup_folder", str(Path(folder).resolve()) if folder else "")
 
     def backup_directory(self) -> Path:
+        """Where backups land: the configured folder if set, else inside the project."""
         configured = self.get_setting("backup_folder")
         if configured:
             return Path(configured).expanduser() / self.root.name
@@ -195,6 +247,12 @@ class Project:
 
     def add_document(self, title: str, parent_id: str | None = None,
                      kind: str = "scene") -> Document:
+        """Create a document as the last child of ``parent_id``.
+
+        Appends at the end of the sibling order (position = max + 1) and
+        writes an empty content file so the row and the file stay in step
+        from the moment the document exists.
+        """
         if kind not in DOCUMENT_KINDS:
             raise ValueError(f"Unknown document kind: {kind}")
         document_id = uuid.uuid4().hex
@@ -215,6 +273,12 @@ class Project:
         return Document(document_id, parent_id, title, "", position, 0, kind, 0)
 
     def documents(self) -> list[Document]:
+        """Every document in binder order: parents before children, siblings by position.
+
+        This is the canonical ordering the whole app follows — the binder
+        tree, the outliner, export and search all iterate this list rather
+        than querying the database themselves.
+        """
         rows = self.db.execute(
             "SELECT id,parent_id,title,synopsis,position,word_target,kind,word_count "
             "FROM documents"
@@ -237,6 +301,11 @@ class Project:
     def update_document(self, document_id: str, *, title: str | None = None,
                         synopsis: str | None = None,
                         word_target: int | None = None) -> None:
+        """Set the given metadata fields on a document; None means leave alone.
+
+        Title, synopsis and word target only — prose is never touched here,
+        it goes through write_content().
+        """
         fields: list[str] = []
         values: list[str] = []
         if title is not None:
@@ -284,6 +353,7 @@ class Project:
             )
 
     def parent_of(self, document_id: str) -> str | None:
+        """The id of this document's parent, or None if it is top-level."""
         row = self.db.execute(
             "SELECT parent_id FROM documents WHERE id=?", (document_id,)
         ).fetchone()
@@ -443,13 +513,26 @@ class Project:
         return result
 
     def content_path(self, document_id: str) -> Path:
+        """Where a document's prose lives on disk: ``documents/<id>.html``."""
         return self.documents_dir / f"{document_id}.html"
 
     def read_content(self, document_id: str) -> str:
+        """A document's stored HTML, or "" if its file is missing.
+
+        Missing is treated as empty rather than an error so a project with
+        a lost file still opens and can be repaired from a backup.
+        """
         path = self.content_path(document_id)
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
     def write_content(self, document_id: str, html: str) -> None:
+        """Replace a document's prose file and refresh its cached word count.
+
+        This is the only path that writes manuscript text, and it is
+        atomic. The word count is derived here rather than stored
+        separately, so the cached number can never disagree with the file
+        that produced it.
+        """
         # Writing to a temp file then os.replace so a crash mid-write can
         # never leave a half-written manuscript: the real file is only ever
         # swapped in whole. fsync first so the temp file's contents are on
@@ -477,6 +560,11 @@ class Project:
 
     @staticmethod
     def plain_text(html: str) -> str:
+        """Strip markup for word counts, search and plain-text export.
+
+        Also unwraps ``[[wiki links]]`` to their bare title, so link
+        markers are never counted as words or leaked into an export.
+        """
         text = re.sub(r"<(br|/p|/div|/h[1-6])\b[^>]*>", "\n", html, flags=re.I)
         text = re.sub(r"\[\[([^\[\]]+)\]\]", r"\1", text)
         return unescape(TAG_RE.sub("", text)).strip()
@@ -541,6 +629,11 @@ class Project:
         return self.LINK_HREF_RE.sub(restore, html)
 
     def search(self, query: str) -> list[Document]:
+        """Documents whose title, synopsis or body text contains ``query``.
+
+        Case-insensitive substring match over stored text. For previews
+        with surrounding context, see search_snippets().
+        """
         needle = query.casefold().strip()
         if not needle:
             return []
@@ -670,6 +763,11 @@ class Project:
         return rollup
 
     def metadata_entries(self, document_id: str) -> dict[str, tuple[str, str, list[str]]]:
+        """One document's metadata: key -> (value, value_type, options).
+
+        ``value_type`` is "text", "date" or "dropdown"; ``options`` holds
+        the allowed values for a dropdown.
+        """
         rows = self.db.execute(
             "SELECT key,value,value_type,options_json FROM document_metadata "
             "WHERE document_id=? ORDER BY key", (document_id,),
@@ -690,6 +788,12 @@ class Project:
     def set_metadata(self, document_id: str, values: dict[str, str],
                      value_types: dict[str, str] | None = None,
                      options: dict[str, list[str]] | None = None) -> None:
+        """Replace a document's metadata with exactly ``values``.
+
+        Not a merge: keys absent from ``values`` are removed. Callers that
+        want to preserve existing keys read them first with
+        metadata_entries() and pass the combined dict back.
+        """
         cleaned = {key.strip(): value for key, value in values.items() if key.strip()}
         value_types = value_types or {}
         options = options or {}
@@ -708,6 +812,11 @@ class Project:
             )
 
     def create_snapshot(self, document_id: str, name: str) -> Snapshot:
+        """Copy a document's current content and synopsis into the snapshot store.
+
+        Called before any operation that rewrites a document (split,
+        merge, restore) so the previous state stays reachable.
+        """
         snapshot_id = uuid.uuid4().hex
         created_at = datetime.now(timezone.utc).isoformat()
         row = self.db.execute(
@@ -724,6 +833,7 @@ class Project:
         return Snapshot(snapshot_id, document_id, name, created_at)
 
     def snapshots(self, document_id: str) -> list[Snapshot]:
+        """A document's snapshots, newest first. Content is read separately."""
         rows = self.db.execute(
             "SELECT id,document_id,name,created_at FROM snapshots "
             "WHERE document_id=? ORDER BY created_at DESC", (document_id,)
@@ -731,6 +841,11 @@ class Project:
         return [Snapshot(**dict(row)) for row in rows]
 
     def restore_snapshot(self, snapshot_id: str) -> str:
+        """Write a snapshot's content back over its document, then return the id.
+
+        Snapshots the state being replaced first, so a restore is itself
+        reversible — you can always get back to what you just left.
+        """
         row = self.db.execute(
             "SELECT document_id,html,synopsis FROM snapshots WHERE id=?", (snapshot_id,)
         ).fetchone()
@@ -896,6 +1011,11 @@ class Project:
 
     def export_text(self, destination: Path, selected_ids: set[str] | None = None,
                     templates: TemplateSet | None = None) -> None:
+        """Write the compiled manuscript as plain text.
+
+        The same compiled units as every other export, with markup
+        stripped; header/footer slots are joined with blank lines.
+        """
         templates = templates or TemplateSet.builtin()
         units = self.compile_units(selected_ids, templates, html=False)
         header = templates.render("project_header", {}, html=False)
@@ -906,6 +1026,7 @@ class Project:
 
     def export_html(self, destination: Path, selected_ids: set[str] | None = None,
                     templates: TemplateSet | None = None) -> None:
+        """Write the compiled manuscript as a single HTML file."""
         templates = templates or TemplateSet.builtin()
         units = self.compile_units(selected_ids, templates, html=True)
         header = templates.render("project_header", {}, html=True)
@@ -963,6 +1084,12 @@ class Project:
 
     def export_epub(self, destination: Path, selected_ids: set[str] | None = None,
                     templates: TemplateSet | None = None) -> None:
+        """Write the compiled manuscript as an EPUB 3 archive.
+
+        One XHTML page per compiled unit, plus the nav document the spec
+        requires and, when the template set defines a non-empty toc_page
+        slot, a visible contents page as the first content page.
+        """
         templates = templates or TemplateSet.builtin()
         units = self.compile_units(selected_ids, templates, html=True)
         header = templates.render("project_header", {}, html=True)
@@ -1037,6 +1164,12 @@ class Project:
             raise
 
     def backup(self, keep: int = 10) -> Path:
+        """Copy the database and documents into a timestamped folder, then prune.
+
+        Checkpoints the WAL first so the copied database is self-contained,
+        and keeps only the newest ``keep`` backups. Called on project open
+        and on Ctrl+S.
+        """
         self.db.execute("PRAGMA wal_checkpoint(FULL)")
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         backup_directory = self.backup_directory()

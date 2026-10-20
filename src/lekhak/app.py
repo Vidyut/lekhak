@@ -1,4 +1,36 @@
-from __future__ import annotations
+"""The Qt application: one window over one Project.
+
+Everything user-visible lives here. The window owns a Project and a set of
+views onto it; the Project owns storage. Nothing in this module writes
+files or SQL directly — it calls into Project, which is where the storage
+contract is enforced.
+
+Layout of the window:
+
+    left   binder tree (QTreeWidget, drag to reorder)
+    center tabbed views: editor / corkboard / outliner
+    right  inspector: synopsis, word target, metadata
+
+Three rules that govern how views and Project interact, and where the
+tricky parts of this file come from:
+
+- Saving is debounced. The editor's textChanged starts a timer; when it
+  fires, save_current() writes through Project. The binder, outliner and
+  corkboard are refreshed from Project after any change, never updated in
+  place — Project is the single source of truth.
+- Display must never leak into storage. Binder numbers, resolved wiki
+  links and interface fonts are all rendered on the way *out* (on load,
+  on paint) and stripped on the way back in (canonicalize_links() before
+  write_content()). Anything that reads a widget's text back into the
+  project has to undo the display layer first.
+- The editor font is pinned, not inherited. Interface font preferences
+  change QApplication's font; the writing editor keeps an explicit 12 pt
+  so preference changes never round-trip into document HTML.
+
+Dialogs at the top of the file are self-contained: each gathers input and
+returns it, with no Project access. MainWindow methods that open them
+apply the result.
+"""
 
 import json
 import re
