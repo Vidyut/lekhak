@@ -38,6 +38,8 @@ transparent, recoverable, and designed around ordinary files.
 - Template fields for title, type, synopsis, word count, content, and metadata
 - Automatic timestamped backups on project open
 - Named section snapshots with reversible restoration
+- Split a section at the cursor (`Ctrl+K`); merge a section with its next
+  sibling (snapshots first, history preserved) — menu and binder context menu
 - Word counts and keyboard shortcuts
 
 Projects are directories ending in `.lekhak`. Existing `.manuscript` projects

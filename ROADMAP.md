@@ -117,12 +117,41 @@ that document in the binder; binder selection highlights the row. Word
 cells on containers are rollups of everything beneath them. Metadata is
 read with one batched query per refresh.
 
-### 1.4 Split and merge scenes
+### 1.4 Split and merge scenes — DONE
 **Request:** split a scene at the cursor into two; merge a scene with its
 sibling.
-**Add:** `Project.split_document(document_id, at_html_offset)` and
-`Project.merge_documents(first_id, second_id)` — both snapshot first, then
-rewrite content and renumber siblings. UI: context-menu items on the binder.
+**Implemented (2026-10-20):**
+- `Project.split_document(document_id, before_html, after_html, new_title=)`
+  — the caller extracts the two HTML halves with `QTextDocumentFragment`,
+  which keeps formatting; the method snapshots ("Before split"), inserts a
+  sibling right after the original (same kind, collision-free "Name (2)"
+  title) and renumbers the rest. Both halves must contain text.
+- `Project.merge_documents(first_id, second_id)` — target must be the
+  immediately following sibling and a leaf; snapshots first ("Before
+  merge"), re-homes the second document's snapshots onto the first so its
+  history survives, concatenates the bodies, deletes the second (metadata
+  cascades away, content file unlinked).
+- `Project.next_sibling()` helper.
+- UI: Document → Split at Cursor (`Ctrl+K`) and Merge with Next Sibling,
+  plus binder context-menu entries (right-click loads the document first).
+  Merge confirms with an explicit warning about dropped metadata.
+
+### 1.8 Interface font size in preferences
+**Request:** font-size picker in Preferences — **for the interface only**
+(menus, binder, corkboard, outliner, synopsis, status bar); the editor
+text keeps the existing zoom (View → Zoom In/Out, Ctrl+0).
+**Danger notes (why this is queued carefully):**
+- `reset_zoom` currently hardcodes 12 pt on the editor — unrelated to this
+  item, but a reminder that font code hides hardcodes.
+- Saved HTML stores its own body font size (`toHtml()` round-trip), so the
+  interface font must never be written into document content.
+- Qt widget fonts do not cascade retroactively; every visible widget needs
+  the size applied on start and on change.
+**Add:** a Preferences dialog (Edit → Preferences…) persisting to
+`QSettings` (org "Lekhak"), a size picker (spin box, ~9–20 pt, default
+system), applied to the whole UI via application font
+(`QApplication.setFont`) at startup and live; no effect on stored
+documents or editor content.
 
 ### 1.5 Internal links
 **Request:** link to internal documents — a picker, and Obsidian-style

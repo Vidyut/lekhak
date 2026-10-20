@@ -8,12 +8,12 @@ from pathlib import Path
 from PySide6.QtCore import QDate, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import (
     QAction, QDesktopServices, QFont, QKeySequence, QTextBlockFormat,
-    QTextCharFormat, QTextCursor, QTextListFormat,
+    QTextCharFormat, QTextCursor, QTextDocumentFragment, QTextListFormat,
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
     QFileDialog, QFontComboBox, QFormLayout, QHBoxLayout, QInputDialog, QLabel,
-    QLineEdit,
+    QLineEdit, QMenu,
     QMainWindow, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
     QPushButton, QSpinBox, QSplitter, QStatusBar, QStyle, QTabWidget,
     QTableWidget, QTableWidgetItem, QTextEdit, QToolBar, QTreeWidget,
@@ -458,6 +458,8 @@ class MainWindow(QMainWindow):
         self.tree.currentItemChanged.connect(self._selection_changed)
         self.tree.itemChanged.connect(self._title_changed)
         self.tree.model().rowsMoved.connect(self._tree_moved)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._tree_context_menu)
 
         self.editor = QTextEdit()
         self.editor.setAcceptRichText(True)
@@ -587,6 +589,10 @@ class MainWindow(QMainWindow):
         self._action(view_menu, "Focus Mode", "F11", self.toggle_focus_mode)
 
         document_menu = self.menuBar().addMenu("&Document")
+        self._action(document_menu, "Split at Cursor", "Ctrl+K", self.split_section)
+        self._action(document_menu, "Merge with Next Sibling", None,
+                     self.merge_with_next)
+        document_menu.addSeparator()
         self._action(document_menu, "Edit Metadata…", None, self.edit_metadata)
         self._action(document_menu, "Outliner Columns…", None, self.pick_outliner_columns)
         self._action(document_menu, "Create Snapshot…", None, self.create_snapshot)
@@ -1064,6 +1070,75 @@ class MainWindow(QMainWindow):
             current = self.tree.currentItem()
             self._selection_changed(current, current)
             self.statusBar().showMessage("Snapshot restored", 3000)
+
+    def split_section(self) -> None:
+        if not self.project or not self.current_id:
+            return
+        self.save_current()
+        document = self.editor.document()
+        position = self.editor.textCursor().position()
+        first = QTextCursor(document)
+        first.setPosition(0)
+        first.setPosition(position, QTextCursor.KeepAnchor)
+        second = QTextCursor(document)
+        second.setPosition(position)
+        second.setPosition(document.characterCount() - 1, QTextCursor.KeepAnchor)
+        before = QTextDocumentFragment(first)
+        after = QTextDocumentFragment(second)
+        if not before.toPlainText().strip() or not after.toPlainText().strip():
+            QMessageBox.information(
+                self, "Split Section",
+                "Both halves need some text — put the cursor between them.",
+            )
+            return
+        try:
+            new = self.project.split_document(
+                self.current_id, before.toHtml(), after.toHtml())
+        except (ValueError, KeyError) as error:
+            QMessageBox.warning(self, "Split Section", str(error))
+            return
+        title = next(d.title for d in self.project.documents()
+                     if d.id == self.current_id)
+        self._reload_tree(self.current_id)
+        self.statusBar().showMessage(
+            f"Split ‘{title}’ and ‘{new.title}’", 4000)
+
+    def merge_with_next(self) -> None:
+        if not self.project or not self.current_id:
+            return
+        self.save_current()
+        following = self.project.next_sibling(self.current_id)
+        if following is None:
+            QMessageBox.information(
+                self, "Merge Sections", "No following sibling to merge with.")
+            return
+        answer = QMessageBox.question(
+            self, "Merge Sections",
+            f"Append ‘{following.title}’ to the end of this section and "
+            "remove it?\n\nThis section is snapshotted first; the other "
+            "section's metadata is dropped.",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            merged = self.project.merge_documents(self.current_id, following.id)
+        except (ValueError, KeyError) as error:
+            QMessageBox.warning(self, "Merge Sections", str(error))
+            return
+        self._reload_tree(self.current_id)
+        self.statusBar().showMessage(
+            f"Merged into ‘{merged.title}’", 4000)
+
+    def _tree_context_menu(self, position) -> None:
+        item = self.tree.itemAt(position)
+        if item is None or not self.project:
+            return
+        if item.data(0, Qt.UserRole) != self.current_id:
+            self.tree.setCurrentItem(item)
+        menu = QMenu(self)
+        menu.addAction("Split at Cursor", self.split_section)
+        menu.addAction("Merge with Next Sibling", self.merge_with_next)
+        menu.exec(self.tree.viewport().mapToGlobal(position))
 
     def export(self, kind: str) -> None:
         if not self.project:

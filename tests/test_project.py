@@ -288,5 +288,113 @@ class SearchReplaceTests(unittest.TestCase):
         self.assertEqual(self.project.replace("", "x")["replacements"], 0)
 
 
+class SplitMergeTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.project = Project.create(Path(self.temporary.name) / "Novel", "Novel")
+        draft = self.project.documents()[0]
+        self.scene_a = self.project.add_document("A", draft.id, "scene")
+        self.scene_b = self.project.add_document("B", draft.id, "scene")
+        self.scene_c = self.project.add_document("C", draft.id, "scene")
+        self.project.write_content(self.scene_a.id, "<p>alpha beta gamma</p>")
+        self.project.write_content(self.scene_b.id, "<p>second scene</p>")
+        self.project.write_content(self.scene_c.id, "<p>third scene</p>")
+
+    def tearDown(self):
+        self.project.close()
+        self.temporary.cleanup()
+
+    def test_split_inserts_sibling_right_after_and_snapshots(self):
+        new = self.project.split_document(
+            self.scene_a.id, "<p>alpha</p>", "<p>beta gamma</p>")
+        self.assertEqual(new.title, "A (2)")
+        self.assertEqual(new.kind, "scene")
+        self.assertEqual(new.position, self.scene_a.position + 1)
+        self.assertEqual(self.project.plain_text(
+            self.project.read_content(self.scene_a.id)), "alpha")
+        self.assertEqual(self.project.plain_text(
+            self.project.read_content(new.id)), "beta gamma")
+        names = [s.name for s in self.project.snapshots(self.scene_a.id)]
+        self.assertIn("Before split", names)
+
+    def test_split_renumbers_following_siblings_in_binder_order(self):
+        self.project.split_document(self.scene_a.id, "<p>alpha</p>", "<p>beta</p>")
+        titles = [d.title for d in self.project.documents()]
+        self.assertEqual(titles[1:4], ["A", "A (2)", "B"])
+
+    def test_split_title_avoids_collisions(self):
+        self.project.split_document(self.scene_a.id, "<p>alpha</p>", "<p>beta</p>")
+        new2 = self.project.split_document(
+            self.scene_a.id, "<p>alp</p>", "<p>ha beta</p>")
+        self.assertEqual(new2.title, "A (3)")
+
+    def test_split_refuses_empty_half(self):
+        with self.assertRaises(ValueError):
+            self.project.split_document(self.scene_a.id, "<p>alpha beta</p>", "<p></p>")
+        with self.assertRaises(ValueError):
+            self.project.split_document(self.scene_a.id, "<p></p>", "<p>alpha</p>")
+
+    def test_split_refuses_unknown_document(self):
+        with self.assertRaises(KeyError):
+            self.project.split_document("nope", "<p>x</p>", "<p>y</p>")
+
+    def test_merge_appends_next_sibling_and_deletes_it(self):
+        merged = self.project.merge_documents(self.scene_a.id, self.scene_b.id)
+        text = self.project.plain_text(self.project.read_content(self.scene_a.id))
+        self.assertIn("alpha beta gamma", text)
+        self.assertIn("second scene", text)
+        self.assertEqual(merged.word_count, 5)
+        remaining = {d.title for d in self.project.documents()}
+        self.assertNotIn("B", remaining)
+        names = [s.name for s in self.project.snapshots(self.scene_a.id)]
+        self.assertIn("Before merge", names)
+
+    def test_merge_keeps_first_title_and_position(self):
+        merged = self.project.merge_documents(self.scene_a.id, self.scene_b.id)
+        self.assertEqual(merged.title, "A")
+        self.assertEqual(merged.id, self.scene_a.id)
+
+    def test_merge_rehomes_second_snapshots(self):
+        self.project.create_snapshot(self.scene_b.id, "b history")
+        self.project.merge_documents(self.scene_a.id, self.scene_b.id)
+        names = [s.name for s in self.project.snapshots(self.scene_a.id)]
+        self.assertIn("b history", names)
+
+    def test_merge_requires_immediately_following_sibling(self):
+        with self.assertRaises(ValueError):
+            self.project.merge_documents(self.scene_a.id, self.scene_c.id)
+        with self.assertRaises(ValueError):
+            self.project.merge_documents(self.scene_b.id, self.scene_a.id)
+
+    def test_merge_refuses_when_second_has_children(self):
+        child = self.project.add_document("child", self.scene_b.id, "note")
+        with self.assertRaises(ValueError):
+            self.project.merge_documents(self.scene_a.id, self.scene_b.id)
+        self.assertIsNotNone(child.id)
+        titles = {d.title for d in self.project.documents()}
+        self.assertIn("B", titles)
+
+    def test_merge_refuses_same_document_and_unknown_ids(self):
+        with self.assertRaises(ValueError):
+            self.project.merge_documents(self.scene_a.id, self.scene_a.id)
+        with self.assertRaises(KeyError):
+            self.project.merge_documents(self.scene_a.id, "nope")
+
+    def test_next_sibling_walks_the_same_parent(self):
+        self.assertEqual(self.project.next_sibling(self.scene_a.id).id,
+                         self.scene_b.id)
+        self.assertEqual(self.project.next_sibling(self.scene_c.id), None)
+        self.assertEqual(self.project.next_sibling("nope"), None)
+
+    def test_split_then_merge_round_trips_content(self):
+        new = self.project.split_document(
+            self.scene_a.id, "<p>alpha</p>", "<p>beta gamma</p>")
+        merged = self.project.merge_documents(self.scene_a.id, new.id)
+        text = self.project.plain_text(self.project.read_content(self.scene_a.id))
+        self.assertIn("alpha", text)
+        self.assertIn("beta gamma", text)
+        self.assertEqual(merged.word_count, 3)
+
+
 if __name__ == "__main__":
     unittest.main()

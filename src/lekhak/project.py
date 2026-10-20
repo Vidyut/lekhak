@@ -301,6 +301,128 @@ class Project:
         for item_id in descendants:
             self.content_path(item_id).unlink(missing_ok=True)
 
+    def next_sibling(self, document_id: str) -> Document | None:
+        """The document following this one under the same parent, if any."""
+        row = self.db.execute(
+            "SELECT parent_id,position FROM documents WHERE id=?", (document_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        sibling = self.db.execute(
+            "SELECT id,parent_id,title,synopsis,position,word_target,kind,word_count "
+            "FROM documents WHERE parent_id IS ? AND position>? "
+            "ORDER BY position LIMIT 1", (row[0], row[1]),
+        ).fetchone()
+        return Document(**dict(sibling)) if sibling else None
+
+    def split_document(self, document_id: str, before_html: str,
+                       after_html: str, *, new_title: str | None = None) -> Document:
+        """Split a section into two at the cursor.
+
+        The caller extracts the two HTML halves (Qt document fragments keep
+        the formatting); this method snapshots the original, inserts a
+        sibling right after it and writes both halves.
+        """
+        row = self.db.execute(
+            "SELECT parent_id,title,position,kind FROM documents WHERE id=?",
+            (document_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(document_id)
+        if not self.plain_text(before_html):
+            raise ValueError("Nothing before the cursor to keep.")
+        if not self.plain_text(after_html):
+            raise ValueError("Nothing after the cursor to split off.")
+        parent_id, title, position, kind = row
+        self.create_snapshot(document_id, "Before split")
+
+        if new_title is None:
+            taken = {
+                r[0] for r in self.db.execute(
+                    "SELECT title FROM documents WHERE parent_id IS ?",
+                    (parent_id,),
+                ).fetchall()
+            }
+            number = 2
+            while f"{title} ({number})" in taken:
+                number += 1
+            new_title = f"{title} ({number})"
+
+        new_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        with self.db:
+            self.db.execute(
+                "UPDATE documents SET position=position+1 "
+                "WHERE parent_id IS ? AND position>?",
+                (parent_id, position),
+            )
+            self.db.execute(
+                "INSERT INTO documents(id,parent_id,title,position,kind,"
+                "created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                (new_id, parent_id, new_title, position + 1, kind, now, now),
+            )
+        self.write_content(document_id, before_html)
+        self.write_content(new_id, after_html)
+        return Document(new_id, parent_id, new_title, "", position + 1, 0, kind, 0)
+
+    def merge_documents(self, first_id: str, second_id: str) -> Document:
+        """Append the next sibling's content onto this document and delete it.
+
+        `second` must immediately follow `first` under the same parent and
+        must have no sub-documents. `first` is snapshotted before the merge;
+        `second`'s snapshots are re-homed under `first` so its history
+        survives. `second`'s metadata is dropped (the row cascade removes it).
+        """
+        if first_id == second_id:
+            raise ValueError("A document cannot merge with itself.")
+        for doc_id in (first_id, second_id):
+            if not self.db.execute(
+                "SELECT 1 FROM documents WHERE id=?", (doc_id,)
+            ).fetchone():
+                raise KeyError(doc_id)
+        following = self.next_sibling(first_id)
+        if following is None or following.id != second_id:
+            raise ValueError(
+                "Merge works with the immediately following sibling only."
+            )
+        if self.db.execute(
+            "SELECT 1 FROM documents WHERE parent_id=? LIMIT 1", (second_id,)
+        ).fetchone():
+            raise ValueError(
+                "The following section contains sub-documents; move them out first."
+            )
+        self.create_snapshot(first_id, "Before merge")
+        with self.db:
+            self.db.execute(
+                "UPDATE snapshots SET document_id=? WHERE document_id=?",
+                (first_id, second_id),
+            )
+        combined = self._join_html(self.read_content(first_id),
+                                   self.read_content(second_id))
+        self.write_content(first_id, combined)
+        self.delete_document(second_id)
+        row = self.db.execute(
+            "SELECT id,parent_id,title,synopsis,position,word_target,kind,"
+            "word_count FROM documents WHERE id=?", (first_id,),
+        ).fetchone()
+        return Document(**dict(row))
+
+    @staticmethod
+    def _body_content(html: str) -> str:
+        match = re.search(r"<body[^>]*>(.*)</body>", html, flags=re.S | re.I)
+        return match.group(1) if match else html
+
+    @classmethod
+    def _join_html(cls, first: str, second: str) -> str:
+        body = cls._body_content(first) + cls._body_content(second)
+        if re.search(r"<body[^>]*>.*</body>", first, flags=re.S | re.I):
+            return re.sub(
+                r"(<body[^>]*>).*(</body>)",
+                lambda m: m.group(1) + body + m.group(2),
+                first, count=1, flags=re.S | re.I,
+            )
+        return f"<html><body>{body}</body></html>"
+
     def _descendant_ids(self, document_id: str) -> list[str]:
         result = [document_id]
         for row in self.db.execute(
