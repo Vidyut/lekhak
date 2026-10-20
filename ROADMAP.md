@@ -210,6 +210,56 @@ field update. **Open:** PDF export does not exist yet (1.6); when it lands,
 the LibreOffice route inherits the DOCX field, giving page numbers, and an
 EPUB-route PDF can add link annotations.
 
+### 1.9 Resume where you left off
+**Request:** "When the software is started, resume from where the cursor was
+when it was closed the last time."
+**Model:** on close, remember the open document id and the cursor position
+(character offset in the plain text) per project; on project open, select
+that document and put the caret back (clamped to length if the text moved).
+Stored in project settings — it is session state about this manuscript, not
+app-wide state, so it travels with the project.
+
+### 1.10 Paste that doesn't mangle formatting, with preferences
+**Request:** "default behaviour should copy stuff like bold/italics, but not
+paragraph formatting or font… paste in something and line break turns into
+two line breaks, indents change, line spacing changes, font changes… and if
+you do ctrl+shift+V, you lose your bold/italics!… Formatting is imported as
+intended to continue the project. So overall para, font, line spacing,
+indent, etc don't change — unless user preferences WANT them to change. But
+any bold, italics, etc come through… alignment and inline formatting should
+survive (alignment is rarely an accident)."
+**Model:** paste goes through our own HTML sanitizer (override
+`insertFromMimeData`), not Qt's raw import. Default policy: keep inline
+character formatting (bold/italic/underline) and alignment; drop font
+family/size, paragraph indents, line spacing and block margins; collapse the
+double-line-break noise that clipboard HTML carries. Preferences gain a
+checkbox section — font, paragraph formatting, alignment, inline formatting
+— plus a "keep everything" path for pasting a fully formatted passage on
+purpose (which feeds 1.11). Ctrl+Shift+V stays plain-text paste.
+
+### 1.11 Paragraph styles from real formatting
+**Request:** "paste beautifully formatted text, right click, update paragraph
+preset or create new preset… now you can save it as a template and change
+your whole document accordingly." (Called "styles" in Word, "classes" in
+CSS — user settled on paragraph preset/style.)
+**Model:** named paragraph styles stored per project (name → block+character
+format signature). Right-click in the editor: "Create style from paragraph…"
+/ "Update style '<name>'". The toolbar's six hardcoded entries
+(`apply_paragraph_style`) become the seed list, user styles join them and
+replace them. Scope check before building: this is formatting metadata only
+— never a second way to store prose.
+
+### 1.12 Metadata panel on the right
+**Request:** "panel on the right for metadata — overall metadata setup on
+outliner type pages and document specific metadata on chapter/scene/note
+pages."
+**Model:** the right-hand inspector (currently Synopsis + Section target)
+grows a metadata section: project-level fields when a folder/outliner root
+is selected, per-document fields on chapters/scenes/notes — the same
+`document_metadata` rows `MetadataDialog` edits, inline instead of modal.
+Project-level metadata needs a home first (project settings or a table) —
+decide at build time, don't invent early.
+
 ## Phase 2 — books, variants, and conditional content
 
 ### 2.1 Book-level compile settings
@@ -231,10 +281,19 @@ blocks in templates can include/exclude whole sections by metadata predicate
 (`$if(Metadata.Status = Draft)`-style, or a small expression language).
 
 ### 2.3 Importers and full round-trip export
-**Request:** "eventually, importer/exporter."
-**Targets:** Markdown import (pandoc-free, our own parser for the common
-case), yWriter 7 `.yw7` import (the author's own workflow), Scrivener
-`.scriv` (XML) import as a stretch goal. Export already covers txt/html/
+**Request:** "eventually, importer/exporter." Then: "I can give you a huge
+dump from Scrivener… books + WIPs (so you can also test behaviour under
+load…) Or we can do just one book at a time." And: "Don't import the old
+export. I can give you a fresh export (with latest edits)."
+**Model:** start with the author's fresh Scrivener multi-document markdown
+dump (the `===DOCUMENT===` block format with Type/Parent/Position headers —
+already proven by the earlier Astray migration audit, 0 warnings), one book
+at a time, structured as chapters/scenes/kinds the way the dump declares.
+The 2026-10 archived exports in `Writing/Scrivener/*.md` are stale and are
+not a source. Serves two purposes at once: the author's real corpus in
+Lekhak for daily writing, and a load fixture for exports/word counts under
+real volume. Further targets: plain Markdown import (pandoc-free), yWriter 7
+`.yw7`, Scrivener `.scriv` XML as stretch. Export already covers txt/html/
 docx/epub; PDF and a clean Markdown export join it.
 
 ### 2.4 Tracked edits with accept/reject, and AI as a source of them
