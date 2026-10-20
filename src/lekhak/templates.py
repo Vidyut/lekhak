@@ -54,6 +54,15 @@ BUILTIN_TEXT: dict[str, str] = {
 
 EXTENSIONS = {True: ".html", False: ".txt"}
 
+# Document-level templates every set has (2.1): "bare" is the sidebar's
+# "nothing, not even title" choice. Sets add their own as files under
+# documents/<name>.html|.txt — a news-item preamble, and so on.
+BUILTIN_DOCUMENT_TEMPLATES: dict[str, dict[bool, str]] = {
+    "bare": {True: "${Content}", False: "${Content}"},
+}
+
+DOCUMENT_TEMPLATE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _-]*")
+
 
 @dataclass(frozen=True)
 class TemplateSet:
@@ -88,10 +97,16 @@ class TemplateSet:
         return slots.get(name, "")
 
     def render(self, name: str, values: dict[str, str], *, html: bool = True) -> str:
-        """Fill one slot. Scalar values are escaped in html mode; ``content``
-        and ``entries`` are raw, as the caller has already decided."""
+        """Fill one named slot of this set."""
+        return self.fill(self.slot(name, html=html), values, html=html)
+
+    @staticmethod
+    def fill(template: str, values: dict[str, str], *,
+             html: bool = True) -> str:
+        """Fill an arbitrary template string. Scalar values are escaped in
+        html mode; ``content``, ``children`` and ``entries`` are raw, as
+        the caller has already decided."""
         raw_keys = {"content", "children", "entries"}
-        template = self.slot(name, html=html)
 
         def substitute(match: re.Match) -> str:
             key = match.group(1).strip()
@@ -101,6 +116,32 @@ class TemplateSet:
             return value
 
         return PLACEHOLDER_RE.sub(substitute, template)
+
+    def document_slot(self, name: str, *, html: bool = True) -> str | None:
+        """A document-level template (2.1): the file
+        ``documents/<name>.html|.txt`` of this set, or the built-in
+        ``bare``; None when this set has no such template, so the caller
+        falls back to the ordinary chapter/scene slot."""
+        if not name or not DOCUMENT_TEMPLATE_NAME_RE.fullmatch(name):
+            return None
+        if self.directory:
+            path = self.directory / "documents" / (name + EXTENSIONS[html])
+            if path.is_file():
+                return path.read_text(encoding="utf-8")
+        builtin = BUILTIN_DOCUMENT_TEMPLATES.get(name)
+        return builtin[html] if builtin else None
+
+    def document_template_names(self) -> list[str]:
+        """Names the sidebar can offer: built-ins plus every template file
+        in this set's documents/ directory."""
+        names = set(BUILTIN_DOCUMENT_TEMPLATES)
+        if self.directory:
+            directory = self.directory / "documents"
+            if directory.is_dir():
+                for path in directory.iterdir():
+                    if path.is_file() and path.suffix in tuple(EXTENSIONS.values()):
+                        names.add(path.stem)
+        return sorted(names)
 
 
 def user_template_root() -> Path:
