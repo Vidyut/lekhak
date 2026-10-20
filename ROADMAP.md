@@ -401,10 +401,68 @@ makes sense and falls back to the neutral default where it does not.
 **Request:** "if book is MH/TI/PF, front/back matter is this, that or the
 other — set on the book folder level; if an image is present in the folder it
 is the book image."
-**Model:** a folder can be flagged as a *book*. A book carries compile
-settings: which front matter template, which back matter, cover image
-(explicit, or auto-detected from a conventional filename inside the folder),
-and which metadata keys are exposed to the template.
+**Model:** the request grew through follow-up Q&A into the anatomy below
+(decisions the author answered directly: the doc templates are files in the
+template set's `documents/` directory; a format variant replaces the basic
+content rather than adding to it; the export dialog offers a set dropdown
+while the four File-menu entries keep picking the format).
+
+- **A TEMPLATES area, not a book flag.** Any folder can be flagged as the
+  special templates root. It renders below the regular folders in binder and
+  outliner wherever it sits (display-lift), and its subtree never exports as
+  manuscript — template pages reach output only through compile settings.
+- **A template is a direct child of a templates root** ("default",
+  "Marginally Human", …). Its subfolders are format variants, matched by
+  title: epub → `("ebook", "epub")`, docx → `("docx", "print")`,
+  html → `("html", "web")`, text → `("text", "txt", "plain")`. A matching
+  variant folder *replaces* the template's basic content for that export. A
+  child folder titled "Back matter" (casefold/strip) marks the pages that go
+  after the book; everything else in the template is front matter.
+- **Association** — `book_settings["template"]` (an explicit folder id) >
+  title match against the book folder > `default`, applied when a folder is
+  directly selected. Chrome fires only when the folder is in the raw export
+  selection, or on a whole-project export where the override/match holds; a
+  chapter- or scene-only selection gets document-level treatment only, and
+  the project header/footer/toc_page wrap only a whole-project compile.
+  Nested dressed folders bookend inward (wrapper outside, book inside).
+- **Document templates** are named slots in the set: `documents/<name>.html`
+  (or `.txt`) plus the builtin `bare` = `${Content}` — "nothing, not even
+  title". Stored per document in the `doc_template` column; a name the set
+  does not have falls back to the default slot rendering.
+- **Counters** never credit template pages: no chapter/scene numbers, no
+  contribution to `${WordsTotal}` — front matter is not manuscript.
+- **Cover** — explicit `book_settings["cover"]` path, else auto-detect
+  `images/<folder_id>/cover.{jpg,jpeg,png,webp,gif}`; EPUB embeds the first
+  dressed book that resolves one (`properties="cover-image"`).
+- The originally drafted **expose-keys metadata allowlist** (which metadata
+  keys a book publishes) is deferred — see open edges.
+
+**Implemented (2026-10-20):** three commits — storage (`de405b7`), compile
+(`e09a78f`), window (`87f5a3e`). Columns `is_templates_root` and
+`doc_template` arrive through the guarded-migration pattern; book settings
+live as one JSON string in the existing settings table (blank removes).
+Compile side: `_export_documents` expands folder selections but excludes
+template subtrees, `_chrome_books`/`_variant_folder`/`_template_pages`/
+`_assemble_with_book_chrome` dress the export, `compile_units(fmt=…)`
+carries template-aware counters, and all four exporters honour the scope
+rules (EPUB adds the cover, DOCX breaks pages around injected template
+pages). Window side: the inspector shows the TEMPLATES flag, book-template
+combo (Automatic = match by name), cover row and — on chapters/scenes/notes
+— the document-template slot combo; binder and outliner render the lifted
+template area in italic; both trees allow multi-select and export gathers
+the union of their selections (empty = whole project, replacing the old
+"Nothing selected" warning); `ExportOptionsDialog` now shows a scope summary
+plus the set dropdown instead of the per-document checklist;
+`_project_total` skips template words. Tests: `tests/test_book_compile.py`
+and `tests/test_app_booksettings.py` (12 each, suite 202).
+**Open edges:** expose-keys deferred; the DOCX TOC field still lands before
+front matter (page breaks work, ordering not yet considered); "Back matter"
+is a title convention, not a flag; outliner word *tooltips* (project
+rollups) still count template words under a regular folder even though the
+project total does not; the binder keeps its current item selected, so a
+whole-project export needs an explicit deselect (the scope summary makes
+this visible); a stored template/slot id that no longer exists shows as
+Automatic/Default and heals on the next actual change.
 
 ### 2.2 Conditional content and link stripping
 **Request:** "only internal links to documents getting published should be
