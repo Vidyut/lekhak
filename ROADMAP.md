@@ -335,6 +335,13 @@ Known edges (refine later): the 4-column grid is cramped at the default
 270 px splitter width; folder documents' own metadata rows stay in storage
 and in search but no longer have UI (the request moves folders to
 project-level fields); project-level fields are not searchable.
+**Follow-up (2026-10-20):** column order is now Field | Value | Type |
+Choices — "seeing name:value next to each other is efficient"; "Allowed
+options" became "Choices" because the old name meant nothing to the
+author; the Value column stretches while Field/Type size to content.
+Dates open as a real picker even for Scrivener's long format
+("Wednesday, January 7, 2443" parses via a second format and
+normalises to ISO on the next save).
 
 ### 1.13 Auto-linked related files (title mentions) — DONE
 **Request:** "auto-linking/tagging — if a file contains words that are an
@@ -449,7 +456,9 @@ Scrivener's unset sentinels ("No Status", "No Label", PoV "None") are
 dropped rather than stored; every real value (PoV, Location, Date, Quote,
 Source, Keywords, custom outline keys) lands in document_metadata, and
 Synopsis lands in the synopsis column — the meta fields are headers and
-never leak into prose (asserted by test). Whole-library import of the
+never leak into prose (asserted by test). The dump's Date column
+imports typed as `date` so it opens in the panel's picker directly, not
+as text ("dates changed to dates directly"). Whole-library import of the
 author's real dump: 3 books, 330 documents, 406k words in ~0.15s — the
 2.6MB file is not too big. File menu: "Import Scrivener Dump…" into the
 open project, and "…into New Project…" which creates a fresh `.lekhak`

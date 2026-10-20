@@ -12,8 +12,10 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QSettings  # noqa: E402
-from PySide6.QtWidgets import QApplication, QComboBox  # noqa: E402
+from PySide6.QtCore import QEvent, QSettings, Qt  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication, QComboBox, QDateEdit,
+)
 
 from lekhak.app import (  # noqa: E402
     PROJECT_METADATA_TARGET, MainWindow, MetadataDialog,
@@ -55,7 +57,7 @@ class MetadataPanelTests(unittest.TestCase):
         self.assertEqual(self.window._metadata_target, self.scene.id)
         self.assertEqual(table.rowCount(), 1)
         self.assertEqual(table.item(0, 0).text(), "POV")
-        self.assertEqual(table.item(0, 3).text(), "Maya")
+        self.assertEqual(table.item(0, 1).text(), "Maya")
 
     def test_folder_selection_shows_project_metadata(self):
         self.project.set_project_metadata({"Series": ("Strays", "text", [])})
@@ -69,7 +71,7 @@ class MetadataPanelTests(unittest.TestCase):
         self.assertEqual(self.window._metadata_target, PROJECT_METADATA_TARGET)
         self.assertEqual(table.rowCount(), 1)
         self.assertEqual(table.item(0, 0).text(), "Series")
-        self.assertEqual(table.item(0, 3).text(), "Strays")
+        self.assertEqual(table.item(0, 1).text(), "Strays")
 
     def test_nothing_selected_targets_the_project(self):
         self.project.set_project_metadata({"Series": ("Strays", "text", [])})
@@ -85,7 +87,7 @@ class MetadataPanelTests(unittest.TestCase):
 
         self.window.metadata_table.add_field()
         self.window.metadata_table.item(0, 0).setText("POV")
-        self.window.metadata_table.item(0, 3).setText("Maya")
+        self.window.metadata_table.item(0, 1).setText("Maya")
 
         self.assertEqual(
             self.project.metadata_entries(self.scene.id)["POV"],
@@ -97,7 +99,7 @@ class MetadataPanelTests(unittest.TestCase):
 
         self.window.metadata_table.add_field()
         self.window.metadata_table.item(0, 0).setText("Series")
-        self.window.metadata_table.item(0, 3).setText("Strays")
+        self.window.metadata_table.item(0, 1).setText("Strays")
 
         self.assertEqual(
             self.project.project_metadata()["Series"],
@@ -151,7 +153,7 @@ class MetadataPanelTests(unittest.TestCase):
         )
         self.window._select_document(self.scene.id)
 
-        value_widget = self.window.metadata_table.cellWidget(0, 3)
+        value_widget = self.window.metadata_table.cellWidget(0, 1)
         self.assertIsInstance(value_widget, QComboBox)
         value_widget.setCurrentText("Final")
 
@@ -211,7 +213,7 @@ class MetadataPanelTests(unittest.TestCase):
         )
         self.window._select_document(self.scene.id)
 
-        value_widget = self.window.metadata_table.cellWidget(0, 3)
+        value_widget = self.window.metadata_table.cellWidget(0, 1)
         self.assertTrue(value_widget.isChecked())
 
         value_widget.setChecked(False)
@@ -227,7 +229,7 @@ class MetadataPanelTests(unittest.TestCase):
         )
         self.window._select_document(self.scene.id)
 
-        editor = self.window.metadata_table.cellWidget(0, 3)
+        editor = self.window.metadata_table.cellWidget(0, 1)
         editor.setPlainText("one\ntwo\nthree")
         # Typing alone must not save per keystroke: the commit fires when
         # the caret leaves the widget (the line-edit editingFinished
@@ -249,7 +251,7 @@ class MetadataPanelTests(unittest.TestCase):
         self.window._select_document(self.scene.id)
         self.window.metadata_table.add_field()
 
-        type_box = self.window.metadata_table.cellWidget(0, 1)
+        type_box = self.window.metadata_table.cellWidget(0, 2)
         values = [type_box.itemData(index) for index in range(type_box.count())]
         self.assertEqual(values, ["text", "textarea", "checkbox", "date", "choice"])
 
@@ -257,15 +259,35 @@ class MetadataPanelTests(unittest.TestCase):
         self.project.set_metadata(self.scene.id, {"Done": "maybe"})
         self.window._select_document(self.scene.id)
 
-        type_box = self.window.metadata_table.cellWidget(0, 1)
+        type_box = self.window.metadata_table.cellWidget(0, 2)
         type_box.setCurrentIndex(type_box.findData("checkbox"))
 
-        value_widget = self.window.metadata_table.cellWidget(0, 3)
+        value_widget = self.window.metadata_table.cellWidget(0, 1)
         self.assertFalse(value_widget.isChecked())      # "maybe" is not yes
         value_widget.setChecked(True)
         self.assertEqual(
             self.project.metadata_entries(self.scene.id)["Done"],
             ("yes", "checkbox", []),
+        )
+
+
+    def test_column_order_puts_value_next_to_the_field(self):
+        table = self.window.metadata_table
+        headers = [table.horizontalHeaderItem(i).text() for i in range(4)]
+        self.assertEqual(headers, ["Field", "Value", "Type", "Choices"])
+
+    def test_scrivener_long_date_opens_in_the_picker_as_a_real_date(self):
+        self.project.set_metadata(
+            self.scene.id, {"Date": "Wednesday, January 7, 2443"},
+            {"Date": "date"},
+        )
+        self.window._select_document(self.scene.id)
+
+        editor = self.window.metadata_table.cellWidget(0, 1)
+        self.assertIsInstance(editor, QDateEdit)
+        self.assertEqual(editor.date().toString(Qt.ISODate), "2443-01-07")
+        self.assertEqual(
+            self.window.metadata_table.row_value(0), "2443-01-07"
         )
 
 

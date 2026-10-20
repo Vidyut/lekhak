@@ -88,7 +88,7 @@ PoV: None
 
 Location: Delhi
 
-Date: 
+Date: Wednesday, January 7, 2443
 
 Quote: 
 
@@ -255,6 +255,8 @@ class ImporterParserTests(unittest.TestCase):
         self.assertEqual(clinic.metadata["Status"], "Draft")  # real value kept
         self.assertEqual(clinic.metadata["Location"], "Delhi")
         self.assertEqual(clinic.metadata["Keywords"], "Hersh, Clinic")
+        self.assertEqual(clinic.metadata["Date"], "Wednesday, January 7, 2443")
+        self.assertEqual(clinic.value_types, {"Date": "date"})
 
     def test_multi_line_synopsis_stays_one_field(self):
         prologue_a = next(

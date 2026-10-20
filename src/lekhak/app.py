@@ -48,7 +48,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
-    QFileDialog, QFontComboBox, QFormLayout, QHBoxLayout, QInputDialog, QLabel,
+    QFileDialog, QFontComboBox, QFormLayout, QHBoxLayout, QHeaderView,
+    QInputDialog, QLabel,
     QLineEdit, QMenu,
     QMainWindow, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
     QPushButton, QSpinBox, QSplitter, QStatusBar, QStyle, QTabWidget,
@@ -285,11 +286,14 @@ PROJECT_METADATA_TARGET = "project"
 
 
 class MetadataTable(QTableWidget):
-    """The Field / Type / Allowed options / Value grid for metadata rows.
+    """The Field / Value / Type / Choices grid for metadata rows.
 
     Extracted from MetadataDialog (1.12) so the right-hand inspector can
     host exactly the same rows inline: the dialog wraps it with Save and
-    Cancel, the inspector saves live whenever ``changed`` fires. Dropdown,
+    Cancel, the inspector saves live whenever ``changed`` fires. Name and
+    value sit in adjacent columns (author's request: "seeing name:value
+    next to each other is efficient"); Choices is only meaningful for a
+    choice-typed row — the comma-separated list it picks from. Dropdown,
     date, checkbox and text-area values live in cell widgets and never
     touch the items, so their signals are wired to _notify alongside
     itemChanged; the text area commits on focus-out the way a line edit
@@ -304,8 +308,12 @@ class MetadataTable(QTableWidget):
     def __init__(self, entries: dict[str, tuple[str, str, list[str]]],
                  parent=None) -> None:
         super().__init__(0, 4, parent)
-        self.setHorizontalHeaderLabels(["Field", "Type", "Allowed options", "Value"])
-        self.horizontalHeader().setStretchLastSection(True)
+        self.setHorizontalHeaderLabels(["Field", "Value", "Type", "Choices"])
+        self.horizontalHeader().setStretchLastSection(False)
+        self.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.setColumnWidth(3, 170)
         self._loading = False
         self.itemChanged.connect(self._item_changed)
         for key, (value, value_type, options) in entries.items():
@@ -345,6 +353,7 @@ class MetadataTable(QTableWidget):
             row = self.rowCount()
             self.insertRow(row)
             self.setItem(row, 0, QTableWidgetItem(key))
+            self._set_value_widget(row, value_type, value, options)
             type_box = QComboBox()
             type_box.addItem("Text", "text")
             type_box.addItem("Text area", "textarea")
@@ -352,12 +361,11 @@ class MetadataTable(QTableWidget):
             type_box.addItem("Date", "date")
             type_box.addItem("Dropdown", "choice")
             type_box.setCurrentIndex(max(0, type_box.findData(value_type)))
-            self.setCellWidget(row, 1, type_box)
+            self.setCellWidget(row, 2, type_box)
             options_editor = QLineEdit(", ".join(options))
             options_editor.setPlaceholderText("Draft, Revised, Final")
             options_editor.setEnabled(value_type == "choice")
-            self.setCellWidget(row, 2, options_editor)
-            self._set_value_widget(row, value_type, value, options)
+            self.setCellWidget(row, 3, options_editor)
             type_box.currentIndexChanged.connect(lambda _index, box=type_box: self._type_changed(box))
             options_editor.editingFinished.connect(
                 lambda editor=options_editor: self._options_changed(editor)
@@ -370,25 +378,25 @@ class MetadataTable(QTableWidget):
         if row < 0:
             return
         value = self.row_value(row)
-        options_editor = self.cellWidget(row, 2)
+        options_editor = self.cellWidget(row, 3)
         options_editor.setEnabled(type_box.currentData() == "choice")
         self._set_value_widget(row, type_box.currentData(), value, self._row_options(row))
         self._notify()
 
     def _options_changed(self, options_editor: QLineEdit) -> None:
         row = self.indexAt(options_editor.pos()).row()
-        if row >= 0 and self.cellWidget(row, 1).currentData() == "choice":
+        if row >= 0 and self.cellWidget(row, 2).currentData() == "choice":
             self._set_value_widget(row, "choice", self.row_value(row), self._row_options(row))
             self._notify()
 
     def _row_options(self, row: int) -> list[str]:
-        editor = self.cellWidget(row, 2)
+        editor = self.cellWidget(row, 3)
         return list(dict.fromkeys(
             option.strip() for option in editor.text().split(",") if option.strip()
         ))
 
     def row_value(self, row: int) -> str:
-        widget = self.cellWidget(row, 3)
+        widget = self.cellWidget(row, 1)
         if isinstance(widget, QDateEdit):
             return widget.date().toString(Qt.ISODate)
         if isinstance(widget, QComboBox):
@@ -400,7 +408,7 @@ class MetadataTable(QTableWidget):
             return "yes" if widget.isChecked() else "no"
         if isinstance(widget, QPlainTextEdit):
             return widget.toPlainText()
-        item = self.item(row, 3)
+        item = self.item(row, 1)
         return item.text() if item else ""
 
     def eventFilter(self, watched, event):
@@ -413,16 +421,23 @@ class MetadataTable(QTableWidget):
 
     def _set_value_widget(self, row: int, value_type: str, value: str,
                           options: list[str]) -> None:
-        self.removeCellWidget(row, 3)
-        self.takeItem(row, 3)
+        self.removeCellWidget(row, 1)
+        self.takeItem(row, 1)
         if value_type == "date":
             editor = QDateEdit()
             editor.setCalendarPopup(True)
             editor.setDisplayFormat("dd MMM yyyy")
             date = QDate.fromString(value, Qt.ISODate)
+            if not date.isValid() and value.strip():
+                # Scrivener writes "Wednesday, January 7, 2443"; month
+                # and day names parse in the C (English) locale. A value
+                # that fails every format still falls back to today, and
+                # the next save normalises it to a proper ISO date — the
+                # author's "dates changed to dates directly".
+                date = QDate.fromString(value.strip(), "dddd, MMMM d, yyyy")
             editor.setDate(date if date.isValid() else QDate.currentDate())
             editor.dateChanged.connect(lambda _date: self._notify())
-            self.setCellWidget(row, 3, editor)
+            self.setCellWidget(row, 1, editor)
             self.setRowHeight(row, self.verticalHeader().defaultSectionSize())
         elif value_type == "choice":
             editor = QComboBox()
@@ -430,22 +445,22 @@ class MetadataTable(QTableWidget):
             if value in options:
                 editor.setCurrentText(value)
             editor.currentTextChanged.connect(lambda _text: self._notify())
-            self.setCellWidget(row, 3, editor)
+            self.setCellWidget(row, 1, editor)
             self.setRowHeight(row, self.verticalHeader().defaultSectionSize())
         elif value_type == "checkbox":
             editor = QCheckBox()
             editor.setChecked(value.strip().lower() in ("yes", "true", "1"))
             editor.stateChanged.connect(lambda _state: self._notify())
-            self.setCellWidget(row, 3, editor)
+            self.setCellWidget(row, 1, editor)
             self.setRowHeight(row, self.verticalHeader().defaultSectionSize())
         elif value_type == "textarea":
             editor = QPlainTextEdit(value)
             editor.setMinimumHeight(56)
             editor.installEventFilter(self)
-            self.setCellWidget(row, 3, editor)
+            self.setCellWidget(row, 1, editor)
             self.setRowHeight(row, 64)
         else:
-            self.setItem(row, 3, QTableWidgetItem(value))
+            self.setItem(row, 1, QTableWidgetItem(value))
             self.setRowHeight(row, self.verticalHeader().defaultSectionSize())
 
     def values_types_options(self) -> tuple[
@@ -456,7 +471,7 @@ class MetadataTable(QTableWidget):
             key_item = self.item(row, 0)
             key = key_item.text().strip() if key_item else ""
             if key:
-                type_box = self.cellWidget(row, 1)
+                type_box = self.cellWidget(row, 2)
                 value_type = type_box.currentData()
                 value_types[key] = value_type
                 values[key] = self.row_value(row)

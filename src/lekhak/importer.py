@@ -66,6 +66,7 @@ class RawDocument:
     synopsis: str
     body: str                       # markdown-ish prose after ===TEXT===
     metadata: dict[str, str] = field(default_factory=dict)
+    value_types: dict[str, str] = field(default_factory=dict)
 
 
 def parse_dump(path: Path) -> list[RawDocument]:
@@ -90,6 +91,7 @@ def parse_dump(path: Path) -> list[RawDocument]:
             synopsis=fields.get("Synopsis", "").strip(),
             body=body.strip("\n"),
             metadata=_kept_metadata(fields),
+            value_types=_value_types(fields),
         ))
     return documents
 
@@ -132,6 +134,22 @@ def _kept_metadata(fields: dict[str, str]) -> dict[str, str]:
             continue
         kept[key] = cleaned
     return kept
+
+
+def _value_types(fields: dict[str, str]) -> dict[str, str]:
+    """Types the dump's Date column as a date so it arrives as a picker.
+
+    The author asked for "dates changed to dates directly": an imported
+    date should open in the panel as a date widget showing the stored
+    day, not as text to retype. Every other kept key stays plain text.
+    """
+    return {
+        key: "date"
+        for key, value in fields.items()
+        if key not in STRUCTURAL_KEYS
+        and key.strip().lower() == "date"
+        and value.strip() not in UNSET_VALUES
+    }
 
 
 def _as_int(text: str) -> int:
@@ -255,7 +273,7 @@ def import_book(project: Project, raw_documents: list[RawDocument],
         if raw.synopsis:
             project.update_document(document.id, synopsis=raw.synopsis)
         if raw.metadata:
-            project.set_metadata(document.id, raw.metadata)
+            project.set_metadata(document.id, raw.metadata, raw.value_types)
         project.write_content(document.id, markdown_to_html(raw.body))
         stack.append((raw.title, document.id))
         if raw.title == book_title and raw.parent in shelf_names:
