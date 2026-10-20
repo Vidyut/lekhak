@@ -643,6 +643,32 @@ is the section tail, not the export pipeline (compile-aware context and
 the remaining uses — synopsis generation, binder Q&A — wait on a later
 pass); no streaming or cancel; the API key sits in QSettings plaintext.
 
+### 2.4a Template-slot editor — DONE
+**Request:** (captured 2026-10-20, queued "after 2.4") an in-app editor
+for the export template slots, with the placeholder vocabulary offered as
+a dropdown and the slot checked for mistakes.
+
+Document → Edit Template Set…: plain-text editing of a set's nine export
+slots (html and text mode) plus its document templates, with a completer
+over the real `${...}` / `$if` / `$else` / `$endif` vocabulary and live
+tier-1 validation — unknown keys (case-sensitive, matching `fill()`'s
+lookup), unbalanced `$if`, orphan `$else`, stray markers — plus a Qt
+round-trip sniff for html slots that catches an unclosed tag swallowing a
+placeholder. Saves are atomic (temp + `os.replace`, the document-content
+contract) and stay allowed with warnings, because `fill()` already
+degrades a bad slot to something printable; the built-in set is
+view-only and New set forks it into the project. This edits slots; the
+expose-keys metadata allowlist (2.1) stays deferred and is a different
+feature.
+**Implemented (2026-10-20):** one commit; `validate_slot` / `TEMPLATE_KEYS`
+/ `TEMPLATE_COMPLETIONS` / `write_slot` in `templates.py` (stays
+Qt-free), `TemplateSlotEditorDialog` + `_roundtrip_issues` in `app.py`.
+Tests: `tests/test_template_slots.py` (19), suite 277.
+**Open edges:** validation does not parse the bare keys inside `$if(...)`
+conditions; a second `$else` inside one `$if` is tolerated silently
+(`fill()` flips the branch twice); the completer offers the fixed
+vocabulary, not the project's actual `Metadata.*` key names.
+
 ## Phase 3 — wish-fulfilling fairy software
 
 ### 3.1 Text to speech
