@@ -218,6 +218,37 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(self.project.documents()[0].kind, "folder")
 
 
+    def test_sibling_rank_is_per_parent_and_survives_reorder(self):
+        root = self.project.documents()[0]
+        folder_one = self.project.add_document("One", root.id, "folder")
+        folder_two = self.project.add_document("Two", root.id, "folder")
+        self.project.add_document("A", folder_one.id, "scene")
+        self.project.add_document("B", folder_one.id, "scene")
+        self.project.add_document("C", folder_two.id, "scene")
+
+        def rank(document_id):
+            parent = next(d for d in self.project.documents()
+                          if d.id == document_id).parent_id
+            siblings = [d for d in self.project.documents()
+                        if d.parent_id == parent]
+            siblings.sort(key=lambda d: d.position)
+            return [d.id for d in siblings].index(document_id) + 1
+
+        c = next(d for d in self.project.documents() if d.title == "C")
+        b = next(d for d in self.project.documents() if d.title == "B")
+        self.assertEqual(rank(c.id), 1)
+        self.assertEqual(rank(b.id), 2)
+        # Rank is per parent: C's first-in-its-own-folder must not be
+        # affected by how many siblings its uncle has.
+        self.project.add_document("D", folder_two.id, "scene")
+        self.assertEqual(rank(c.id), 1)
+        # A reorder renumbers the ranks that follow it.
+        self.project.reorder(b.id, folder_one.id, 0)
+        self.assertEqual(rank(b.id), 1)
+        self.assertEqual(rank(next(d for d in self.project.documents()
+                                   if d.title == "A").id), 2)
+
+
 class SearchReplaceTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
