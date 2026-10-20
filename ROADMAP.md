@@ -287,3 +287,15 @@ Anything above that didn't earn a slot gets collected here as it arrives.
   annotations` unions; keep new annotations under that import and prefer
   3.9-safe stdlib. Verify with
   `ast.parse(src, feature_version=(3, 9))` across `src/ scripts/ tests/`.
+- **Manuscripts are precious.** Nothing may rewrite, prefix or reformat a
+  document's stored title or content as a side effect of a display,
+  numbering or import/export feature. An interchange concern (binder
+  numbers, TOC markers) is shown on the way out and stripped on the way in;
+  it never lands in the stored manuscript.
+- **Lean over clever.** Before implementing a feature, check whether it
+  needs a new mechanism, a new stored role, a new regex in a write path or
+  a new code path that can touch content. If it does, stop and say
+  "I don't advise this because…" with the specific risk or bloat, and let
+  the decision be made explicitly rather than by default. Prefer the
+  representation that has no way to corrupt data over the one that merely
+  looks tidier.
