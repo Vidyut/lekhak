@@ -210,7 +210,7 @@ field update. **Open:** PDF export does not exist yet (1.6); when it lands,
 the LibreOffice route inherits the DOCX field, giving page numbers, and an
 EPUB-route PDF can add link annotations.
 
-### 1.9 Resume where you left off
+### 1.9 Resume where you left off — DONE
 **Request:** "When the software is started, resume from where the cursor was
 when it was closed the last time."
 **Model:** on close, remember the open document id and the cursor position
@@ -218,6 +218,17 @@ when it was closed the last time."
 that document and put the caret back (clamped to length if the text moved).
 Stored in project settings — it is session state about this manuscript, not
 app-wide state, so it travels with the project.
+**Implemented (2026-10-20):** `save_current()` writes `last_document` +
+`last_cursor` on every save path (debounce, document switch, close — so a
+crash still resumes); `_switch_project` selects the remembered document
+(fallback: first binder item, stale cursor not applied) and `_restore_cursor`
+clamps the offset (hand-edited junk settings leave the caret at start).
+Scope confirmed with author: startup also reopens the project itself —
+app-level `QSettings` key `session/lastProject`, written on successful
+switch, read by `MainWindow.reopen_last_project()`; missing/moved/corrupt
+project falls back to the empty window with no dialog.
+Tests: `tests/test_app_resume.py` (9 offscreen GUI tests; QSettings
+redirected to a temp dir so the suite never touches real config).
 
 ### 1.10 Paste that doesn't mangle formatting, with preferences
 **Request:** "default behaviour should copy stuff like bold/italics, but not

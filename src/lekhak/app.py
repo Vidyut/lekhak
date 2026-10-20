@@ -729,11 +729,40 @@ class MainWindow(QMainWindow):
             self.project.close()
         self.project = project
         self.current_id = None
+        # Startup resume (1.9): which project was open is app-wide state —
+        # written only on a successful switch, read by main() at startup.
+        QSettings().setValue("session/lastProject", str(project.root))
         self.setWindowTitle(f"{project.get_setting('title', project.root.stem)} — Lekhak")
-        self._reload_tree()
+        last_document = project.get_setting("last_document")
+        self._reload_tree(select_id=last_document or None)
         self._set_project_enabled(True)
-        if self.tree.topLevelItemCount():
+        if not self.tree.currentItem() and self.tree.topLevelItemCount():
             self.tree.setCurrentItem(self.tree.topLevelItem(0))
+        # Restore the caret only into the document it was saved from —
+        # a deleted last_document falls back to the first item above and
+        # this cursor belongs to a document that isn't open.
+        if last_document and self.current_id == last_document:
+            self._restore_cursor()
+
+    def _restore_cursor(self) -> None:
+        """Session resume (1.9): put the caret back where the last save left it.
+
+        Offsets are plain-text characters (the units QTextCursor reports).
+        Clamped because the text may have moved since; the format is
+        transparent, so settings can be hand-edited — a junk value leaves
+        the caret at the start rather than failing.
+        """
+        if not self.project or not self.current_id:
+            return
+        raw = self.project.get_setting("last_cursor", "0")
+        try:
+            offset = int(raw)
+        except ValueError:
+            return
+        offset = min(max(offset, 0), self.editor.document().characterCount() - 1)
+        cursor = self.editor.textCursor()
+        cursor.setPosition(offset)
+        self.editor.setTextCursor(cursor)
 
     def _reload_tree(self, select_id: str | None = None) -> None:
         if not self.project:
@@ -991,11 +1020,6 @@ class MainWindow(QMainWindow):
             self.project.wiki_targets(self.current_id) if not resolved
         ]
 
-    def _content_changed(self) -> None:
-        if not self.loading:
-            self.save_timer.start()
-            self._update_word_count()
-
     def _selection_changed(self, current, previous) -> None:
         if self.loading:
             return
@@ -1040,6 +1064,13 @@ class MainWindow(QMainWindow):
                 synopsis=self.synopsis.toPlainText(),
                 word_target=self.target.value(),
             )
+            # 1.9 session resume: written on every save path (debounce,
+            # document switch, close) so a crash still resumes — the
+            # caret offset is plain-text characters, same units on read.
+            self.project.set_setting("last_document", self.current_id)
+            self.project.set_setting(
+                "last_cursor", str(self.editor.textCursor().position())
+            )
             self.statusBar().showMessage("Saved", 1500)
             self._refresh_outliner()
         except Exception as error:
@@ -1059,6 +1090,31 @@ class MainWindow(QMainWindow):
                 self, "Backup failed",
                 f"Your document was saved, but the backup could not be created.\n\n{error}",
             )
+
+    def reopen_last_project(self) -> None:
+        """1.9 resume: reopen the project that was open at last close.
+
+        App-level QSettings points at the project; the document and caret
+        inside it come from that project's own settings (see
+        _switch_project). Any failure — moved, deleted, corrupt — falls
+        back to the empty window; no dialog at startup.
+        """
+        path = QSettings().value("session/lastProject", "", type=str)
+        if not path or not Path(path).exists():
+            return
+        project = Project(Path(path))
+        try:
+            project.open()
+            project.backup()
+            self._switch_project(project)
+        except Exception:
+            # _switch_project may have half-assigned state before failing;
+            # rewind so the fallback really is the empty window. close() is
+            # safe even if open() never got far (connection starts None).
+            project.close()
+            self.project = None
+            self.current_id = None
+            return
 
     def choose_backup_folder(self) -> None:
         if not self.project:
@@ -1509,6 +1565,7 @@ def main() -> int:
         application.setFont(interface_font)
     window = MainWindow()
     window.show()
+    window.reopen_last_project()  # 1.9 resume-on-start
     return application.exec()
 
 
