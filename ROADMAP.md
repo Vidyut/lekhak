@@ -583,31 +583,65 @@ and the file splits on those, pandoc-free, everything between dividers
 becoming the document's prose. Same placement stack as the dump import
 once the blocks exist.
 
-### 2.4 Tracked edits with accept/reject, and AI as a source of them
+### 2.4 Tracked edits with accept/reject, and AI as a source of them — DONE
 **Request:** "eventually, AI integration and tracked edits to
 accept/reject."
 
 **Layer 1 — tracked changes (no AI required).** Word-style revision marks
 inside the editor: insertions and deletions carry a change id, an author
-label, and a timestamp, rendered inline (underline/colour for inserts,
-strike for deletes). Every change is addressable so it can be accepted or
-rejected individually or in a batch. Storage: the HTML keeps the marked-up
-form (so a project remains transparent — a plain text editor still sees the
-words), with change metadata in a `revisions` table. Accept bakes the text
-and drops the mark; reject removes it and restores what was there. A
-session ("revision pass") groups related changes so a whole pass can be
-accepted or rejected at once. Interacts with snapshots: taking a snapshot
-while changes are pending stores the marked-up state.
+label (Preferences → "Change author label", default "Author"), and a
+timestamp. Rendering is a pair of sentinel styles Qt round-trips — a
+blue-tinted underline for inserts, a red-tinted strike for deletes —
+because `toHtml()` keeps a background colour but drops custom format
+properties; the live change ids ride those custom properties while the
+document is open, and re-attach to the marks **by span order per kind**
+after a reload (`attach_ids`). Storage is the marked-up HTML plus
+pending-only rows in a `revisions` table; accept deletes the row with the
+mark, reject deletes the insert or unmarks the deletion. A session
+("revision pass") groups changes and is created per tracking toggle-on;
+the Revision Passes dialog accepts or rejects one whole pass, and Accept
+All / Reject All cover the document. Word counts, search and every export
+see the **accepted** rendering (`plain_text` → `accepted_html`) — the
+stored file keeps its marks until the writer resolves them.
 
-**Layer 2 — AI integration.** A provider-agnostic client (local Ollama or
-any OpenAI-compatible endpoint; keys in the app config, never in the
-project). AI output never lands in the document directly — it always
-arrives as a tracked-change session the writer accepts or rejects, which is
-exactly what layer 1 provides. First uses: continue-the-scene from the
-cursor, proofread/simplify the selection, generate a synopsis from
-selection, and answer questions about the binder (POV consistency, scene
-count, word targets). Context is assembled from the export pipeline, so
-what the model sees is what a compile would see.
+**Layer 2 — AI integration.** A provider-agnostic client (`ai.py`, urllib
+only, no extra dependency): any OpenAI-compatible `/chat/completions`
+endpoint, Ollama's localhost server as the default, endpoint/model/key in
+Preferences (app settings, never the project). First uses shipped:
+**AI → Continue Scene** (the section's tail, capped, at the caret) and
+**AI → Proofread Selection**. Both land through
+`apply_tracked_replacement` as one tracked pair under an "AI" byline and
+their own session — never a direct write, and the tracking toggle does not
+gate them, so accept/reject stays the writer's call.
+
+**Implemented (2026-10-20):** three commits — core (`c0a5ec5`), AI layer
+(`ba0beac`), ROADMAP. Storage and marks: `revisions` table + sentinel
+constants + `accepted_html`/`reconcile_revisions` in `project.py`, the
+live-mark half in a new `revisions.py` (`runs`/`segments`/`apply_accept`/
+`apply_reject`/`attach_ids`). Editor: `LinkEditor` gained the tracking
+state machine — typing bursts coalesce into one insert until the caret
+leaves the end, backspacing a plain char strikes it in place, erasing
+already-marked text removes it and its row, pastes are one change,
+paragraph-mark joins at block boundaries stay with Qt untracked. Window:
+Track Changes (Ctrl+Shift+T), Accept/Reject All in Section, Revision
+Passes…; reconcile runs on every save; AI menu + Preferences AI section.
+Also fixed en route: `plain_text` leaked Qt's CSS head, adding ~19
+phantom words per stored document. Tests: `tests/test_revisions.py` (24)
+plus `tests/test_ai.py` (9, canned loopback endpoint), suite 258.
+**Open edges:** deleting a paragraph mark (block join) is untracked —
+the separator is invisible and Qt owns the merge; bursts split on caret
+moves, not on punctuation or pauses; marks left without rows (undo
+removed them behind the table's back) keep rendering but are
+unaddressable until neighbours resolve — the table never invents rows,
+only prunes; per-change granularity keeps its data (ids on every row)
+but ships no list yet, so the passes dialog is document+pass only; undo
+can desync rows from marks until the next save's reconcile heals it; the
+live status-bar word count still counts struck words until the next
+save recomputes; restoring a snapshot taken with pending marks restores
+the marked-up prose and reconcile prunes the orphaned rows; AI context
+is the section tail, not the export pipeline (compile-aware context and
+the remaining uses — synopsis generation, binder Q&A — wait on a later
+pass); no streaming or cancel; the API key sits in QSettings plaintext.
 
 ## Phase 3 — wish-fulfilling fairy software
 
