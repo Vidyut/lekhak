@@ -272,6 +272,17 @@ is likely a thin wrapper with a voice picker and a play/stop/pause toolbar.
 ### 3.2 Everything else in the wish list
 Anything above that didn't earn a slot gets collected here as it arrives.
 
+**Book cover generator (captured 2026-10-20, not scheduled).** Full-wrap
+cover from user-provided images: front, back, spine. The value is doing
+the parts writers get wrong and waste days on — spine width computed from
+page count × paper type (Amazon's white vs cream constants differ),
+bleed added outside the trim, a check that spine lettering and back-cover
+blurbs stay inside the safe zone, and a PDF at the exact dimensions
+KDP/IngramSpark accept. Front/back/spine laid out from a template per
+trim size; user drops in their artwork and text. Depends on 1.6 (page
+geometry + realistic page count) and on a PDF writer, so it lands after
+both — see the PDF deferral above.
+
 ---
 
 ## Working agreements
