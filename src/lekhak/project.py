@@ -78,6 +78,20 @@ COVER_MEDIA_TYPES = {
     "webp": "image/webp", "gif": "image/gif",
 }
 
+# 2.2 strip policies, for links whose target is not in the current export:
+# "strip" removes the link's words from the output entirely, "plain-text"
+# leaves the words but no link, "keep-as-note" leaves the words plus a
+# marker naming the missing target. Published links (target in the export)
+# always become real links where the format can carry one.
+LINK_POLICIES = ("strip", "plain-text", "keep-as-note")
+DEFAULT_LINK_POLICY = "plain-text"
+
+# DOCX-internal link markers: \x02<doc_id>\x03<text>\x04 survives
+# plain_text (neither unescape nor TAG_RE touches control characters), so
+# export_docx can split the plain-text runs into real w:hyperlink runs
+# anchored at each heading's bookmark.
+LINK_TOKEN_RE = re.compile(r"\x02([^\x03\x04]+)\x03([^\x04]*)\x04")
+
 
 def _template_numbers(is_template: bool, chapter_number: int,
                       scene_number: int, words_total: int) -> dict[str, str]:
@@ -1006,8 +1020,10 @@ class Project:
         One JSON string in the existing settings table — the
         project_metadata precedent — so there is no schema change and junk
         degrades to no settings. Keys: "template" (a template folder id
-        that overrides the automatic title match) and "cover" (explicit
-        image path; empty means auto-detect images/<folder_id>/cover.*).
+        that overrides the automatic title match), "cover" (explicit
+        image path; empty means auto-detect images/<folder_id>/cover.*)
+        and "links" (2.2 strip policy for this book's documents; empty
+        means follow the project default).
         """
         raw = self.get_setting("book_settings")
         try:
@@ -1021,7 +1037,7 @@ class Project:
             return {}
         return {
             key: str(row[key])
-            for key in ("template", "cover")
+            for key in ("template", "cover", "links")
             if isinstance(row.get(key), str)
         }
 
@@ -1039,7 +1055,7 @@ class Project:
         cleaned = {
             key: str(value).strip()
             for key, value in (settings or {}).items()
-            if key in ("template", "cover") and str(value).strip()
+            if key in ("template", "cover", "links") and str(value).strip()
         }
         if cleaned:
             stored[document_id] = cleaned
@@ -1410,8 +1426,13 @@ class Project:
     def _render_document(self, document: Document, templates: TemplateSet,
                          html: bool, *, slot: str | None = None,
                          content: str | None = None,
-                         extra: dict[str, str] | None = None) -> str:
+                         extra: dict[str, str] | None = None,
+                         scope: dict | None = None,
+                         fmt: str = "html") -> str:
         body = self.read_content(document.id) if content is None else content
+        if scope is not None:
+            body = self._prepare_links(body, source_id=document.id,
+                                       scope=scope, fmt=fmt, html=html)
         if not html:
             body = self.plain_text(body)
         values = self._template_values(document, content=body, extra=extra)
@@ -1422,6 +1443,128 @@ class Project:
         if slot is None:
             slot = "chapter" if document.kind == "chapter" else "scene"
         return templates.render(slot, values, html=html)
+
+    def _compile_scope(self, selected_ids: set[str] | None,
+                       fmt: str) -> dict:
+        """Everything one compile's links need to know (2.2): the exported
+        document ids, each document's unit index (shared by a chapter and
+        its scenes, 0-based), the ancestor chain used to look up per-book
+        settings, an exact-title resolution index over the whole binder,
+        and the project-wide strip policy.
+
+        Split out of compile_units so header/footer strings — compiled
+        outside the unit list — run through the same machinery.
+        """
+        export_docs, template_ids = self._assemble_with_book_chrome(
+            self._export_documents(selected_ids), selected_ids, fmt)
+        export_ids = {d.id for d in export_docs}
+        all_docs = self.documents()
+        parent_map = {d.id: d.parent_id for d in all_docs}
+        kinds = {d.id: d.kind for d in all_docs}
+        chapter_scenes: dict[str, list[Document]] = {}
+        ordered: list[Document] = []
+        for document in export_docs:
+            chapter_id = self._nearest_chapter_ancestor(document.id, parent_map, kinds)
+            if document.kind == "scene" and chapter_id in export_ids:
+                chapter_scenes.setdefault(chapter_id, []).append(document)
+            else:
+                ordered.append(document)
+        doc_unit: dict[str, int] = {}
+        for index, document in enumerate(ordered):
+            doc_unit[document.id] = index
+            if document.kind == "chapter":
+                for scene in chapter_scenes.get(document.id, []):
+                    doc_unit[scene.id] = index
+        titles: dict[str, list[Document]] = {}
+        for document in all_docs:
+            titles.setdefault(document.title.casefold(), []).append(document)
+        try:
+            settings = json.loads(self.get_setting("book_settings"))
+        except (TypeError, ValueError):
+            settings = {}
+        if not isinstance(settings, dict):
+            settings = {}
+        policy = self.get_setting("link_policy")
+        return {
+            "export_docs": export_docs,
+            "template_ids": template_ids,
+            "export_ids": export_ids,
+            "ordered": ordered,
+            "chapter_scenes": chapter_scenes,
+            "parent_map": parent_map,
+            "doc_unit": doc_unit,
+            "titles": titles,
+            "book_settings": settings,
+            "global_policy": policy if policy in LINK_POLICIES
+            else DEFAULT_LINK_POLICY,
+        }
+
+    def _link_policy(self, scope: dict, source_id: str | None) -> str:
+        """Strip policy in force for one source document (2.2): the first
+        ancestor folder with a book-level "links" override wins, else the
+        project default."""
+        settings = scope["book_settings"]
+        current = source_id
+        while current is not None:
+            row = settings.get(current)
+            if isinstance(row, dict) and row.get("links") in LINK_POLICIES:
+                return str(row["links"])
+            current = scope["parent_map"].get(current)
+        return scope["global_policy"]
+
+    def _prepare_links(self, content: str, *, source_id: str | None,
+                       scope: dict, fmt: str, html: bool) -> str:
+        """Rewrite ``[[wiki]]`` markers for one export (2.2).
+
+        A link whose exact title is in the exported set becomes a real
+        link where the format can carry one — a fragment anchor for html,
+        a section file for epub, a token pair for docx — and plain words
+        for text. Everything else (broken, ambiguous, out of the set —
+        matching the editor, which never auto-opens a substring
+        candidate) follows the source's strip policy. Runs on raw read
+        content, before plain_text; a second pass finds no markers and is
+        a no-op.
+        """
+        if not self.WIKI_LINK_RE.search(content):
+            return content
+
+        def replace(match: re.Match) -> str:
+            target = match.group(1).strip()
+            text = escape(target) if html else target
+            documents = scope["titles"].get(target.casefold())
+            resolved = documents[0] if documents else None
+            if resolved is not None and resolved.id in scope["export_ids"]:
+                unit = scope["doc_unit"][resolved.id] + 1
+                if fmt == "html":
+                    return f"<a href='#unit-{unit}'>{text}</a>"
+                if fmt == "epub":
+                    return f"<a href='section-{unit}.xhtml'>{text}</a>"
+                if fmt == "docx":
+                    return f"\x02{resolved.id}\x03{target}\x04"
+                return text
+            policy = self._link_policy(scope, source_id)
+            if policy == "strip":
+                return ""
+            if policy == "keep-as-note":
+                suffix = (" (not in this export)" if not html
+                          else escape(" (not in this export)"))
+                return f"{text}{suffix}"
+            return text
+
+        return self.WIKI_LINK_RE.sub(replace, content)
+
+    def rewrite_wiki_links(self, text: str,
+                           selected_ids: set[str] | None = None, *,
+                           fmt: str = "html", html: bool = True) -> str:
+        """Link pass for strings compiled outside compile_units — the
+        project header/footer slots (2.2). No markers, no scope build;
+        with markers, this compile's whole link set is consulted, with the
+        global policy (header/footer belongs to no book)."""
+        if not text or not self.WIKI_LINK_RE.search(text):
+            return text
+        scope = self._compile_scope(selected_ids, fmt)
+        return self._prepare_links(text, source_id=None, scope=scope,
+                                   fmt=fmt, html=html)
 
     def compile_units(self, selected_ids: set[str] | None = None,
                       templates: TemplateSet | None = None,
@@ -1441,20 +1584,11 @@ class Project:
         chapter/scene numbering and the running word total.
         """
         templates = templates or TemplateSet.builtin()
-        export_docs, template_ids = self._assemble_with_book_chrome(
-            self._export_documents(selected_ids), selected_ids, fmt)
-        export_ids = {d.id for d in export_docs}
-        all_docs = self.documents()
-        parent_map = {d.id: d.parent_id for d in all_docs}
-        kinds = {d.id: d.kind for d in all_docs}
-        chapter_scenes: dict[str, list[Document]] = {}
-        ordered: list[Document] = []
-        for document in export_docs:
-            chapter_id = self._nearest_chapter_ancestor(document.id, parent_map, kinds)
-            if document.kind == "scene" and chapter_id in export_ids:
-                chapter_scenes.setdefault(chapter_id, []).append(document)
-            else:
-                ordered.append(document)
+        scope = self._compile_scope(selected_ids, fmt)
+        export_docs = scope["export_docs"]
+        template_ids = scope["template_ids"]
+        ordered = scope["ordered"]
+        chapter_scenes = scope["chapter_scenes"]
 
         units: list[tuple[str, str]] = []
         chapter_number = 0
@@ -1470,7 +1604,9 @@ class Project:
                     chapter_number += 1
                 scene_number = 0
                 parts: list[str] = []
-                own = self.read_content(document.id)
+                own = self._prepare_links(
+                    self.read_content(document.id), source_id=document.id,
+                    scope=scope, fmt=fmt, html=html)
                 if not html:
                     own = self.plain_text(own)
                 if own.strip():
@@ -1488,7 +1624,8 @@ class Project:
                         scene_in_template or in_template,
                         chapter_number, scene_number, words_total + scene.word_count)
                     parts.append(self._render_document(
-                        scene, templates, html, slot=slot, extra=extra))
+                        scene, templates, html, slot=slot, extra=extra,
+                        scope=scope, fmt=fmt))
                     if not scene_in_template:
                         words_total += scene.word_count
                     if scene_end:
@@ -1499,7 +1636,8 @@ class Project:
                                           words_total)
                 body = self._render_document(
                     document, templates, html, slot="chapter",
-                    content="\n".join(parts), extra=extra)
+                    content="\n".join(parts), extra=extra,
+                    scope=scope, fmt=fmt)
                 if not in_template:
                     words_total += document.word_count
                 if chapter_end:
@@ -1514,7 +1652,8 @@ class Project:
                 extra = _template_numbers(in_template, chapter_number,
                                           scene_number, words_total)
                 body = self._render_document(
-                    document, templates, html, extra=extra)
+                    document, templates, html, extra=extra,
+                    scope=scope, fmt=fmt)
                 if not in_template:
                     words_total += document.word_count
                 if scene_end:
@@ -1539,6 +1678,10 @@ class Project:
         if selected_ids is None:
             header = templates.render("project_header", {}, html=False)
             footer = templates.render("project_footer", {}, html=False)
+            header = self.rewrite_wiki_links(
+                header, selected_ids, fmt="text", html=False)
+            footer = self.rewrite_wiki_links(
+                footer, selected_ids, fmt="text", html=False)
         else:
             header, footer = "", ""
         body = "\n\n\n".join(body for _title, body in units if body.strip())
@@ -1554,13 +1697,22 @@ class Project:
         if selected_ids is None:
             header = templates.render("project_header", {}, html=True)
             footer = templates.render("project_footer", {}, html=True)
+            header = self.rewrite_wiki_links(
+                header, selected_ids, fmt="html", html=True)
+            footer = self.rewrite_wiki_links(
+                footer, selected_ids, fmt="html", html=True)
         else:
             header, footer = "", ""
         title = escape(self.get_setting("title", "Lekhak"))
+        # 2.2: one invisible anchor per unit, so a published [[link]] has
+        # somewhere to point inside this single file.
+        anchored = "".join(
+            f"<a id='unit-{index}'></a>{body}"
+            for index, (_t, body) in enumerate(units, start=1))
         content = (
             "<!doctype html><meta charset='utf-8'>"
             f"<title>{title}</title>{header}"
-            f"{''.join(body for _t, body in units)}{footer}"
+            f"{anchored}{footer}"
         )
         self._atomic_write(Path(destination), content)
 
@@ -1592,9 +1744,11 @@ class Project:
         end.set(qn("w:fldCharType"), "end")
         for element in (begin, instruction, separate, placeholder, end):
             run._r.append(element)
-        assembled, injected = self._assemble_with_book_chrome(
-            self._export_documents(selected_ids), selected_ids, "docx")
+        scope = self._compile_scope(selected_ids, "docx")
+        assembled = scope["export_docs"]
+        injected = scope["template_ids"]
         previous_injected = False
+        bookmark_id = 1
         for document in assembled:
             # Book anatomy (2.1): every template page starts a fresh
             # page, and manuscript resumes on a fresh page after them.
@@ -1611,10 +1765,24 @@ class Project:
                 output.add_section(WD_SECTION_START.ODD_PAGE)
             elif document.page_break in ("left", "next-even"):
                 output.add_section(WD_SECTION_START.EVEN_PAGE)
-            output.add_heading(document.title, level=1 if document.kind == "chapter" else 2)
-            for paragraph in self.plain_text(self.read_content(document.id)).split("\n"):
-                if paragraph.strip():
-                    output.add_paragraph(paragraph.strip())
+            heading = output.add_heading(document.title, level=1 if document.kind == "chapter" else 2)
+            # 2.2: every heading carries a bookmark, so a published
+            # [[link]] becomes a real Word-internal hyperlink.
+            start = OxmlElement("w:bookmarkStart")
+            start.set(qn("w:id"), str(bookmark_id))
+            start.set(qn("w:name"), f"d{document.id}")
+            finish = OxmlElement("w:bookmarkEnd")
+            finish.set(qn("w:id"), str(bookmark_id))
+            p_element = heading._p
+            p_element.insert(1 if p_element.pPr is not None else 0, start)
+            p_element.append(finish)
+            bookmark_id += 1
+            content = self._prepare_links(
+                self.read_content(document.id), source_id=document.id,
+                scope=scope, fmt="docx", html=True)
+            for paragraph_text in self.plain_text(content).split("\n"):
+                if paragraph_text.strip():
+                    self._docx_paragraph(output, paragraph_text.strip())
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}-", dir=destination.parent)
@@ -1625,6 +1793,41 @@ class Project:
         except BaseException:
             Path(temporary_name).unlink(missing_ok=True)
             raise
+
+    @staticmethod
+    def _docx_paragraph(output, text: str) -> None:
+        """One plain-text DOCX paragraph, with link tokens (2.2) split
+        out into w:hyperlink runs anchored at the target heading's
+        ``d<doc_id>`` bookmark. python-docx has no hyperlink API, so the
+        elements are built by hand."""
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        paragraph = output.add_paragraph()
+        position = 0
+        for match in LINK_TOKEN_RE.finditer(text):
+            if match.start() > position:
+                paragraph.add_run(text[position:match.start()])
+            hyperlink = OxmlElement("w:hyperlink")
+            hyperlink.set(qn("w:anchor"), f"d{match.group(1)}")
+            run = OxmlElement("w:r")
+            props = OxmlElement("w:rPr")
+            color = OxmlElement("w:color")
+            color.set(qn("w:val"), "0563C1")
+            underline = OxmlElement("w:u")
+            underline.set(qn("w:val"), "single")
+            props.append(color)
+            props.append(underline)
+            run.append(props)
+            node = OxmlElement("w:t")
+            node.set(qn("xml:space"), "preserve")
+            node.text = match.group(2)
+            run.append(node)
+            hyperlink.append(run)
+            paragraph._p.append(hyperlink)
+            position = match.end()
+        if position < len(text):
+            paragraph.add_run(text[position:])
 
     def export_epub(self, destination: Path, selected_ids: set[str] | None = None,
                     templates: TemplateSet | None = None) -> None:
@@ -1640,6 +1843,10 @@ class Project:
         if selected_ids is None:
             header = templates.render("project_header", {}, html=True)
             footer = templates.render("project_footer", {}, html=True)
+            header = self.rewrite_wiki_links(
+                header, selected_ids, fmt="epub", html=True)
+            footer = self.rewrite_wiki_links(
+                footer, selected_ids, fmt="epub", html=True)
         else:
             header, footer = "", ""
         # The cover is a book property (2.1): the first dressed book in

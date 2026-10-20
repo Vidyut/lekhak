@@ -28,6 +28,15 @@ SLOTS = (
 
 PLACEHOLDER_RE = re.compile(r"\$\{([^{}]+)\}")
 
+# 2.2 conditional blocks: $if(Key), $if(Key = Value), $if(Key != Value),
+# $else, $endif — evaluated against the same values that fill ${...}.
+# The $if(...) piece stops at the first ")", so a condition value
+# containing ")" cannot be matched; conditionals live only in template
+# slots, never in document prose.
+CONDITIONAL_PIECE_RE = re.compile(
+    r"(\$if\([^)]*\)|\$else(?![A-Za-z])|\$endif(?![A-Za-z]))")
+CONDITIONAL_EXPR_RE = re.compile(r"^(.+?)\s*(!=|=)\s*(.*)$")
+
 BUILTIN_HTML: dict[str, str] = {
     "project_header": "",
     "project_footer": "",
@@ -105,7 +114,9 @@ class TemplateSet:
              html: bool = True) -> str:
         """Fill an arbitrary template string. Scalar values are escaped in
         html mode; ``content``, ``children`` and ``entries`` are raw, as
-        the caller has already decided."""
+        the caller has already decided. $if/$else/$endif blocks (2.2) are
+        evaluated first and the dead branches removed."""
+        template = TemplateSet.conditionals(template, values)
         raw_keys = {"content", "children", "entries"}
 
         def substitute(match: re.Match) -> str:
@@ -116,6 +127,50 @@ class TemplateSet:
             return value
 
         return PLACEHOLDER_RE.sub(substitute, template)
+
+    @staticmethod
+    def conditionals(template: str, values: dict[str, str]) -> str:
+        """Evaluate $if/$else/$endif blocks (2.2); the result is the
+        template with dead branches and every marker consumed.
+
+        A condition is either a bare key — true when its value is
+        non-empty — or `Key = Value` / `Key != Value`, compared
+        case-insensitively against the raw (unescaped) value. Nesting
+        works. An unmatched $if keeps its branch state to the end of the
+        template; a stray $else/$endif is dropped. A hand-edited slot
+        therefore degrades to something printable, never to leaked
+        markers.
+        """
+        active = [True]
+        else_taken: list[bool] = []
+        result: list[str] = []
+        for piece in CONDITIONAL_PIECE_RE.split(template):
+            if piece.startswith("$if("):
+                condition = TemplateSet._condition_holds(piece[4:-1], values)
+                active.append(condition)
+                else_taken.append(condition)
+            elif piece == "$else":
+                if else_taken:
+                    active[-1] = not else_taken[-1]
+                    else_taken[-1] = True
+            elif piece == "$endif":
+                if else_taken:
+                    else_taken.pop()
+                    active.pop()
+            elif all(active):
+                result.append(piece)
+        return "".join(result)
+
+    @staticmethod
+    def _condition_holds(expr: str, values: dict[str, str]) -> bool:
+        match = CONDITIONAL_EXPR_RE.match(expr.strip())
+        if not match:
+            return bool(values.get(expr.strip(), "").strip())
+        key = match.group(1).strip()
+        expected = match.group(3).strip()
+        actual = values.get(key, "").strip()
+        equal = actual.casefold() == expected.casefold()
+        return equal if match.group(2) == "=" else not equal
 
     def document_slot(self, name: str, *, html: bool = True) -> str | None:
         """A document-level template (2.1): the file
