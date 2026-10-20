@@ -47,6 +47,10 @@ from .templates import TemplateSet
 
 
 TAG_RE = re.compile(r"<[^>]+>")
+# Qt's toHtml() prepends a CSS head; without dropping it, every stored
+# document would count ~19 phantom words ("p, li { white-space …") and
+# leak the same lines into text exports and search.
+STYLE_RE = re.compile(r"<style\b[^>]*>.*?</style>", re.I | re.S)
 
 # Kinds are labels, not structure: any item may contain any other, at any
 # depth, and several items may share the top level. Folder is a neutral
@@ -718,6 +722,7 @@ class Project:
         words of an insertion, never the words of a deletion.
         """
         html = Project.accepted_html(html)
+        html = STYLE_RE.sub(" ", html)
         text = re.sub(r"<(br|/p|/div|/h[1-6])\b[^>]*>", "\n", html, flags=re.I)
         text = re.sub(r"\[\[([^\[\]]+)\]\]", r"\1", text)
         return unescape(TAG_RE.sub("", text)).strip()

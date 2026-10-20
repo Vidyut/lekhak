@@ -60,6 +60,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from . import ai
 from . import revisions
 from .importer import dump_books, import_all_books, parse_dump
 from .project import DEFAULT_LINK_POLICY, EXPORT_KINDS, Project
@@ -246,7 +247,9 @@ LINK_POLICY_CHOICES = (
 class PreferencesDialog(QDialog):
     def __init__(self, font_size: int, paste: dict[str, bool],
                  link_policy: str | None = None,
-                 revision_author: str = "Author", parent=None) -> None:
+                 revision_author: str = "Author",
+                 ai_settings: "ai.AISettings | None" = None,
+                 parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Preferences")
         layout = QVBoxLayout(self)
@@ -307,6 +310,30 @@ class PreferencesDialog(QDialog):
         )
         paste_note.setWordWrap(True)
         layout.addWidget(paste_note)
+
+        # AI (2.4, layer 2): any OpenAI-compatible /chat/completions
+        # endpoint; Ollama's localhost server is the default and the
+        # key stays empty for local servers.
+        active_ai = ai_settings or ai.load_settings()
+        layout.addWidget(QLabel("AI endpoint (OpenAI-compatible):"))
+        ai_form = QFormLayout()
+        self.ai_endpoint_edit = QLineEdit(active_ai.endpoint)
+        self.ai_model_edit = QLineEdit(active_ai.model)
+        self.ai_model_edit.setPlaceholderText("e.g. qwen2.5:7b")
+        self.ai_key_edit = QLineEdit(active_ai.key)
+        self.ai_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.ai_key_edit.setPlaceholderText("empty for local servers")
+        ai_form.addRow("Endpoint:", self.ai_endpoint_edit)
+        ai_form.addRow("Model:", self.ai_model_edit)
+        ai_form.addRow("API key:", self.ai_key_edit)
+        layout.addLayout(ai_form)
+        ai_note = QLabel(
+            "Used by AI → Continue Scene and Proofread Selection. The "
+            "answer is always applied as a tracked change, never written "
+            "into the manuscript directly."
+        )
+        ai_note.setWordWrap(True)
+        layout.addWidget(ai_note)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
@@ -1673,6 +1700,14 @@ class MainWindow(QMainWindow):
         self._action(document_menu, "Restore Snapshot…", None, self.restore_snapshot)
         self._action(document_menu, "Link to Section…", "Ctrl+L", self._link_section)
 
+        # AI (2.4, layer 2): a thin menu over the OpenAI-compatible
+        # client; output only ever lands via the tracked-changes path.
+        ai_menu = self.menuBar().addMenu("&AI")
+        self._action(ai_menu, "Continue Scene", None,
+                     self._ai_continue_scene)
+        self._action(ai_menu, "Proofread Selection", None,
+                     self._ai_proofread_selection)
+
     def _action(self, menu, text, shortcut, callback) -> QAction:
         action = QAction(text, self)
         if shortcut:
@@ -2427,6 +2462,85 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Pass {verb} ({len(change_ids)} change(s))", 3000)
 
+    # --- AI (2.4, layer 2) --------------------------------------------------
+
+    def _ai_continue_scene(self) -> None:
+        """Ask the model to continue the section at the caret. The
+        answer lands as a tracked insertion with its own session and the
+        "AI" byline — the tracking toggle does not gate it, and the
+        model never writes the document directly."""
+        if not self.project or not self.current_id:
+            return
+        self.save_current()
+        # Tail, not head: what matters for a continuation is the prose
+        # just before the caret, not the chapter opening.
+        context = Project.plain_text(self.editor.toHtml())[-4000:]
+        cursor = self.editor.textCursor()
+        position = cursor.position()
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                text = ai.complete(
+                    "You are a co-author continuing a novel scene. Keep "
+                    "the established voice, tense and point of view. "
+                    "Return only the continuation prose — no preamble, no "
+                    "quotation marks, no commentary.",
+                    context,
+                )
+            finally:
+                QApplication.restoreOverrideCursor()
+        except ai.AIError as error:
+            QMessageBox.warning(self, "AI request failed", str(error))
+            return
+        if not text:
+            self.statusBar().showMessage("AI returned nothing", 3000)
+            return
+        self.editor.apply_tracked_replacement(position, position, text,
+                                              uuid4().hex, "AI")
+        self._content_changed()
+        self.statusBar().showMessage(
+            "AI continuation inserted as a tracked change", 4000)
+
+    def _ai_proofread_selection(self) -> None:
+        """Proofread the selection in place as one tracked pair: the old
+        words stay struck behind the corrected ones until accepted."""
+        if not self.project or not self.current_id:
+            return
+        cursor = self.editor.textCursor()
+        if not cursor.hasSelection():
+            self.statusBar().showMessage(
+                "Select the text to proofread first", 4000)
+            return
+        start, end = cursor.selectionStart(), cursor.selectionEnd()
+        # selectedText() uses U+2029 for paragraph breaks.
+        selected = cursor.selectedText().replace("\u2029", "\n")
+        self.save_current()
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                text = ai.complete(
+                    "You are a copy editor. Fix spelling, grammar and "
+                    "punctuation only; keep the author's voice, wording "
+                    "and paragraphing. Return only the corrected text — "
+                    "no commentary.",
+                    selected,
+                )
+            finally:
+                QApplication.restoreOverrideCursor()
+        except ai.AIError as error:
+            QMessageBox.warning(self, "AI request failed", str(error))
+            return
+        if not text:
+            self.statusBar().showMessage("AI returned nothing", 3000)
+            return
+        # save_current never moves the live document, so the captured
+        # selection offsets still hold.
+        self.editor.apply_tracked_replacement(start, end, text,
+                                              uuid4().hex, "AI")
+        self._content_changed()
+        self.statusBar().showMessage(
+            "Proofread text applied as a tracked change", 4000)
+
     def save_current(self) -> None:
         if not self.project or not self.current_id or self.loading:
             return
@@ -3116,7 +3230,8 @@ class MainWindow(QMainWindow):
             if self.project else None
         )
         dialog = PreferencesDialog(current, load_paste_prefs(), link_policy,
-                                   revision_author(), self)
+                                   revision_author(), ai.load_settings(),
+                                   parent=self)
         if dialog.exec() != QDialog.Accepted:
             return
         size = dialog.size_spin.value()
@@ -3136,6 +3251,11 @@ class MainWindow(QMainWindow):
         settings.setValue("paste/alignment", dialog.paste_alignment.isChecked())
         settings.setValue("revisions/author",
                           dialog.author_edit.text().strip() or "Author")
+        ai.save_settings(ai.AISettings(
+            endpoint=dialog.ai_endpoint_edit.text().strip(),
+            model=dialog.ai_model_edit.text().strip(),
+            key=dialog.ai_key_edit.text(),
+        ))
         if self.project:
             self.project.set_setting(
                 "link_policy", dialog.link_policy_box.currentData())

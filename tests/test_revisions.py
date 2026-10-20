@@ -103,16 +103,29 @@ class RevisionStorageTests(unittest.TestCase):
         self.assertEqual(INSERT_SPAN_RE.findall(accepted), [])
         self.assertEqual(DELETE_SPAN_RE.findall(accepted), [])
 
-    def test_plain_text_renders_the_accepted_form(self):
+    def test_plain_text_unwraps_wiki_links_and_marks(self):
         # Insert words count, delete words do not, wiki markers unwrap.
         self.assertEqual(Project.plain_text(BOTH_HTML),
                          "Hello new  world")
         self.assertEqual(
             Project.plain_text('<p>[[Chapter One]] '
                                '<span style="background-color:#cfe4ff;">'
-                               'said</span></p>'),
+                               "said</span></p>"),
             "Chapter One said",
         )
+
+    def test_plain_text_drops_the_qt_css_head(self):
+        # Regression: QTextEdit.toHtml() prepends a CSS block whose words
+        # must never reach word counts, search or the text export.
+        qt_html = (
+            '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0//EN">'
+            '<html><head><meta name="qrichtext" content="1" />'
+            '<style type="text/css">\np, li { white-space: pre-wrap; }\n'
+            "hr { height: 1px; border-width: 0; }\n</style></head>"
+            "<body style=\" font-family:'Ubuntu Sans';\">"
+            "<p>Hello world</p></body></html>"
+        )
+        self.assertEqual(Project.plain_text(qt_html), "Hello world")
 
     def test_reconcile_prunes_rows_whose_spans_are_gone(self):
         inserts = [self.project.add_revision(self.draft.id, "s1", "insert",
