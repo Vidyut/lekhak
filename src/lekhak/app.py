@@ -2131,13 +2131,13 @@ class MainWindow(QMainWindow):
                 )
                 return
             self.save_current()
-            folders = import_all_books(self.project, raw_documents)
+            wrapper_id, books = import_all_books(self.project, raw_documents)
         except Exception as error:
             QMessageBox.critical(self, "Import failed", str(error))
             return
-        self._reload_tree(select_id=folders[0])
+        self._reload_tree(select_id=wrapper_id or books[0])
         self.statusBar().showMessage(
-            f"Imported {len(folders)} books from {Path(path).name}", 5000
+            f"Imported {len(books)} books from {Path(path).name}", 5000
         )
 
     def import_scrivener_dump_new_project(self) -> None:
@@ -2160,15 +2160,14 @@ class MainWindow(QMainWindow):
         try:
             project = Project.create(Path(selected) / title.strip(), title.strip())
             raw_documents = parse_dump(Path(path))
-            folders = import_all_books(project, raw_documents)
+            wrapper_id, books = import_all_books(project, raw_documents)
             self._switch_project(project)
-            if folders:
-                self._reload_tree(select_id=folders[0])
+            self._reload_tree(select_id=wrapper_id or (books[0] if books else None))
         except Exception as error:
             QMessageBox.critical(self, "Could not import project", str(error))
             return
         self.statusBar().showMessage(
-            f"Imported {len(folders)} books into {title.strip()}", 5000
+            f"Imported {len(books)} books into {title.strip()}", 5000
         )
 
     def bold(self) -> None:

@@ -141,19 +141,48 @@ def _as_int(text: str) -> int:
         return 0
 
 
+def shelf_works(raw_documents: list[RawDocument]) -> dict[str, list[str]]:
+    """Containers that are a shelf of works rather than a book.
+
+    A top-level parent (its title matches no document — only such
+    parents can be books) with at least two direct children, every one
+    of them a chapter, is Scrivener's generic "Manuscript" arrangement:
+    separate works stored as chapter-level documents. Real books in the
+    author's corpus always have a book-level scene among their children
+    (a title page), so all-chapters never misfires on them. Returns
+    shelf title -> work titles, in binder order.
+    """
+    titles = {document.title for document in raw_documents}
+    children: dict[str, list[RawDocument]] = {}
+    for document in raw_documents:
+        if document.parent and document.parent not in titles:
+            children.setdefault(document.parent, []).append(document)
+    return {
+        parent: [child.title for child in kids]
+        for parent, kids in children.items()
+        if len(kids) >= 2 and all(child.kind == "chapter" for child in kids)
+    }
+
+
 def dump_books(raw_documents: list[RawDocument]) -> list[str]:
-    """The book folders a dump contains, in binder order.
+    """The books a dump contains, in binder order.
 
     A book is a parent title that is not itself a document — the dump
     never includes folder blocks, so the books only exist as the parents
-    their chapters hang off.
+    their chapters hang off — except for shelves: each work a shelf
+    holds becomes its own book, since that is what the author means by
+    a book ("the third book should be Perfectly Flawed…").
     """
+    shelves = shelf_works(raw_documents)
     titles = {document.title for document in raw_documents}
     books: list[str] = []
     for document in raw_documents:
-        if document.parent and document.parent not in titles:
-            if document.parent not in books:
-                books.append(document.parent)
+        parent = document.parent
+        if not parent or parent in titles:
+            continue
+        for book in shelves.get(parent, [parent]):
+            if book not in books:
+                books.append(book)
     return books
 
 
@@ -198,13 +227,23 @@ def import_book(project: Project, raw_documents: list[RawDocument],
     land under their own book's chapter even when another book has a
     chapter with the same title. Documents whose parent chain never
     reaches ``book_title`` belong to another book and are skipped.
+
+    A promoted shelf work (see shelf_works) differs in one way: the
+    work's own chapter block — whose parent is the shelf, not the book —
+    becomes the book's first child, and its scenes hang under that
+    chapter exactly as they did in Scrivener, so no structure and no
+    prose is lost in the promotion.
     """
+    shelf_names = set(shelf_works(raw_documents))
     folder = project.add_document(book_title, parent_id, "folder")
     stack: list[tuple[str, str]] = []          # (title, document_id)
+    work_chapter: str | None = None
     for raw in raw_documents:
         while stack and stack[-1][0] != raw.parent:
             stack.pop()
         if raw.parent == book_title:
+            child_parent = work_chapter or folder.id
+        elif raw.title == book_title and raw.parent in shelf_names:
             child_parent = folder.id
         elif stack:
             child_parent = stack[-1][1]
@@ -219,19 +258,36 @@ def import_book(project: Project, raw_documents: list[RawDocument],
             project.set_metadata(document.id, raw.metadata)
         project.write_content(document.id, markdown_to_html(raw.body))
         stack.append((raw.title, document.id))
+        if raw.title == book_title and raw.parent in shelf_names:
+            work_chapter = document.id
     return folder.id
 
 
-def import_all_books(project: Project,
-                     raw_documents: list[RawDocument]) -> list[str]:
-    """Import every book in a dump, each as a top-level folder.
+def import_all_books(project: Project, raw_documents: list[RawDocument]
+                     ) -> tuple[str | None, list[str]]:
+    """Import every book in a dump; returns (wrapper id or None, book ids).
 
     This is the normal path: the author hands over one file containing
     their whole library and expects Lekhak to do the splitting, so the
-    caller never has to know what books the dump contains. Returns the
-    book folder ids in binder order.
+    caller never has to know what books the dump contains.
+
+    When the dump holds exactly one shelf (the author's "Manuscript"),
+    the shelf becomes a wrapper folder and every book lands inside it —
+    folder blocks are absent from the dump, so the shelf is the only
+    trace of where the books lived, and the author's reference
+    structure confirms Marginally Human and Terminally-Immortal sit
+    inside Manuscript beside the works. With no shelf, or more than
+    one, books import at the top level instead: nothing in the dump
+    can say which shelf an outside book belongs to.
     """
-    return [
-        import_book(project, raw_documents, book)
-        for book in dump_books(raw_documents)
+    books = dump_books(raw_documents)
+    shelves = shelf_works(raw_documents)
+    wrapper_id: str | None = None
+    if len(shelves) == 1:
+        wrapper_id = project.add_document(
+            next(iter(shelves)), None, "folder"
+        ).id
+    return wrapper_id, [
+        import_book(project, raw_documents, book, wrapper_id)
+        for book in books
     ]

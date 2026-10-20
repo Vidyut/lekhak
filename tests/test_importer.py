@@ -285,6 +285,168 @@ class ImporterParserTests(unittest.TestCase):
         self.assertIn("<p>Other Book</p>", html)
 
 
+SHELF_DUMP = """\
+===DOCUMENT===
+
+Type: Chapter
+
+ID: 10
+
+Position: 1
+
+ParentPosition: 0
+
+Parent: Manuscript
+
+Title: Novelette A
+
+PoV: Maya
+
+Location: 
+
+Date: 
+
+Quote: 
+
+Source: 
+
+Status: No Status
+
+Label: 
+
+Keywords: 
+
+Synopsis: 
+
+===TEXT===
+
+A shell of prose.
+
+===DOCUMENT===
+
+Type: Scene
+
+ID: 11
+
+Position: 1
+
+ParentPosition: 1
+
+Parent: Novelette A
+
+Title: A-beat
+
+PoV: 
+
+Location: 
+
+Date: 
+
+Quote: 
+
+Source: 
+
+Status: No Status
+
+Label: 
+
+Keywords: 
+
+Synopsis: 
+
+===TEXT===
+
+Scene under the work.
+
+===DOCUMENT===
+
+Type: Chapter
+
+ID: 12
+
+Position: 2
+
+ParentPosition: 0
+
+Parent: Manuscript
+
+Title: Novelette B
+
+PoV: 
+
+Location: 
+
+Date: 
+
+Quote: 
+
+Source: 
+
+Status: No Status
+
+Label: 
+
+Keywords: 
+
+Synopsis: 
+
+===TEXT===
+
+Second work.
+"""
+
+
+class ShelfTests(unittest.TestCase):
+    """A generic all-chapters container is a shelf of works, not a book."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.path = Path(self.temporary.name) / "shelf.md"
+        self.path.write_text(SHELF_DUMP, encoding="utf-8")
+        self.raws = parse_dump(self.path)
+        self.project = Project.create(
+            Path(self.temporary.name) / "Corpus", "Corpus"
+        )
+
+    def tearDown(self):
+        self.project.close()
+        self.temporary.cleanup()
+
+    def test_shelf_children_become_the_books(self):
+        self.assertEqual(dump_books(self.raws), ["Novelette A", "Novelette B"])
+
+    def test_single_shelf_becomes_a_wrapper_holding_every_book(self):
+        wrapper_id, folders = import_all_books(self.project, self.raws)
+
+        wrapper = next(d for d in self.project.documents() if d.id == wrapper_id)
+        self.assertEqual(wrapper.title, "Manuscript")
+        self.assertEqual(wrapper.kind, "folder")
+        self.assertIsNone(wrapper.parent_id)
+        book_titles = [d.title for d in self.project.documents()
+                       if d.parent_id == wrapper_id]
+        self.assertEqual(book_titles, ["Novelette A", "Novelette B"])
+
+    def test_promoted_work_keeps_its_chapter_and_its_scenes(self):
+        _wrapper, folders = import_all_books(self.project, self.raws)
+
+        folder_a = next(d for d in self.project.documents()
+                        if d.id == folders[0])
+        chapter = next(d for d in self.project.documents()
+                       if d.parent_id == folder_a.id)
+        self.assertEqual(chapter.title, "Novelette A")
+        self.assertEqual(chapter.kind, "chapter")
+        self.assertIn("shell of prose", self.project.read_content(chapter.id))
+        scenes = [d for d in self.project.documents() if d.parent_id == chapter.id]
+        self.assertEqual([s.title for s in scenes], ["A-beat"])
+
+        folder_b = next(d for d in self.project.documents()
+                        if d.id == folders[1])
+        chapter_b = next(d for d in self.project.documents()
+                         if d.parent_id == folder_b.id)
+        self.assertEqual(chapter_b.title, "Novelette B")
+        self.assertEqual(chapter_b.parent_id, folder_b.id)
+
+
 class ImportBookTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -341,8 +503,9 @@ class ImportBookTests(unittest.TestCase):
         self.assertEqual(len(self.project.documents()), 1 + 2 + 5)
 
     def test_import_all_books_creates_one_folder_per_book(self):
-        folders = import_all_books(self.project, self.raws)
+        wrapper_id, folders = import_all_books(self.project, self.raws)
 
+        self.assertIsNone(wrapper_id)          # no shelf in this dump
         self.assertEqual(len(folders), 2)
         titles = [d.title for d in self.project.documents()
                   if d.id in set(folders)]
@@ -370,14 +533,33 @@ class FullCorpusTests(unittest.TestCase):
         self.assertEqual(len(raws), 326)
         self.assertEqual(
             dump_books(raws),
-            ["Marginally Human", "Terminally-Immortal", "Manuscript"],
+            [
+                "Marginally Human", "Terminally-Immortal",
+                # Manuscript is a shelf: its 8 works are the books
+                "Perfectly Flawed", "Prequel", "The Copper Mine",
+                "SHADEs of Sapience", "Hakim's story",
+                "Abrahamha's Ultimatum", "Antyeshti", "Short stories",
+            ],
         )
 
-        folders = import_all_books(self.project, raws)
-        self.assertEqual(len(folders), 3)
+        wrapper_id, folders = import_all_books(self.project, raws)
+        self.assertEqual(len(folders), 10)
+        wrapper = next(d for d in self.project.documents() if d.id == wrapper_id)
+        self.assertEqual(wrapper.title, "Manuscript")
+        books_inside = [d.title for d in self.project.documents()
+                        if d.parent_id == wrapper_id]
+        self.assertEqual(
+            books_inside,
+            [
+                "Marginally Human", "Terminally-Immortal",
+                "Perfectly Flawed", "Prequel", "The Copper Mine",
+                "SHADEs of Sapience", "Hakim's story",
+                "Abrahamha's Ultimatum", "Antyeshti", "Short stories",
+            ],
+        )
         documents = self.project.documents()
-        # 1 seeded Draft + 3 book folders + every block once
-        self.assertEqual(len(documents), 1 + 3 + 326)
+        # 1 seeded Draft + the Manuscript wrapper + 10 books + every block
+        self.assertEqual(len(documents), 1 + 1 + 10 + 326)
         prose = [doc for doc in documents if doc.kind == "scene" and doc.word_count > 50]
         self.assertGreater(len(prose), 100)   # real prose actually landed
         # The dump's meta fields are headers, never prose: nothing from

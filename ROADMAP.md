@@ -433,6 +433,18 @@ splitting is the app's job, per the author's correction on first use
 ("I don't know how to split it when I import… I thought you would do
 it"), not a book-by-book picker. Duplicate chapter titles across books
 cannot cross-wire because each book is placed by its own stack pass.
+**Shelf handling:** a generic container whose direct children are all
+chapters (Scrivener's "Manuscript": 8 works stored as chapter-level
+docs) is not a book — each child is, and the author's reference
+structure shows Marginally Human and Terminally-Immortal inside
+Manuscript beside them too. Since folder blocks are absent from the
+dump, that containment is an assumption, recorded here as such: with
+exactly one shelf in the dump, the shelf becomes a wrapper folder and
+every book imports inside it, matching the author's screenshot; with
+none or several, books import at the top level where the dump cannot
+misplace them. Real books are never mistaken for shelves because each
+has a book-level scene (a title page) among its children — verified
+against all three top-level containers of the real corpus.
 Scrivener's unset sentinels ("No Status", "No Label", PoV "None") are
 dropped rather than stored; every real value (PoV, Location, Date, Quote,
 Source, Keywords, custom outline keys) lands in document_metadata, and
