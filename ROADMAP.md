@@ -260,6 +260,25 @@ is selected, per-document fields on chapters/scenes/notes — the same
 Project-level metadata needs a home first (project settings or a table) —
 decide at build time, don't invent early.
 
+### 1.13 Auto-linked related files (title mentions)
+**Request:** "auto-linking/tagging — if a file contains words that are an
+EXACT match for another file, it gets linked in metadata as a related file,
+for eg. character or location names. Handy for checking continuity, updating
+character sheets, or even providing an AI additional info about the
+characters/locations in a scene. So if a scene has 'Aaxyl went to Ridnam'
+and there are files aaxyl.html and ridnam.html, they show up as related
+files in the metadata without needing the writer to do it specifically."
+**Model:** computed, never stored. A project-level scan matches whole-word
+occurrences of document titles (case-insensitive — the example matches
+"Aaxyl" against a file named aaxyl) in each document's plain text; the
+result is shown as a "Related files" list in the metadata panel (1.12),
+clickable to jump. Shown in both directions where it's cheap: this scene
+mentions these characters/locations, and (on a character sheet) which
+documents mention it — the continuity view. No new tables, no write path,
+nothing to go stale: titles are the vocabulary and the scan runs on view.
+Scope check before building: do not turn mentions into stored links or
+editable relations — that would be a second source of truth for prose.
+
 ## Phase 2 — books, variants, and conditional content
 
 ### 2.1 Book-level compile settings
