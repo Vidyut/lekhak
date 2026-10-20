@@ -614,5 +614,83 @@ class WikiLinkTests(unittest.TestCase):
         self.assertEqual(self.project.canonicalize_links(once), once)
 
 
+class BookAndTemplateStorageTests(unittest.TestCase):
+    """Storage half of 2.1: the TEMPLATES flag, per-folder book settings,
+    template listing and cover resolution."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.project = Project.create(Path(self.temporary.name) / "Novel", "Novel")
+
+    def tearDown(self):
+        self.project.close()
+        self.temporary.cleanup()
+
+    def test_templates_root_flag_roundtrips(self):
+        draft = self.project.documents()[0]
+        self.assertFalse(draft.is_templates_root)
+        self.assertEqual(self.project.templates_roots(), [])
+
+        self.project.set_templates_root(draft.id, True)
+        roots = self.project.templates_roots()
+        self.assertEqual([r.id for r in roots], [draft.id])
+
+        self.project.set_templates_root(draft.id, False)
+        self.assertEqual(self.project.templates_roots(), [])
+
+    def test_template_folders_are_direct_children_only(self):
+        draft = self.project.documents()[0]
+        self.project.set_templates_root(draft.id, True)
+        marginally = self.project.add_document("Marginally Human", draft.id, "folder")
+        self.project.add_document("Novellas", draft.id, "folder")
+        self.project.add_document("ebook", marginally.id, "folder")
+
+        titles = [d.title for d in self.project.template_folders()]
+        self.assertEqual(titles, ["Marginally Human", "Novellas"])
+
+    def test_book_settings_roundtrip_blank_removes_and_junk_degrades(self):
+        draft = self.project.documents()[0]
+        self.assertEqual(self.project.book_settings(draft.id), {})
+
+        self.project.set_book_settings(
+            draft.id, {"template": "abc123", "cover": "covers/mh.jpg"})
+        self.assertEqual(
+            self.project.book_settings(draft.id),
+            {"template": "abc123", "cover": "covers/mh.jpg"},
+        )
+
+        self.project.set_book_settings(draft.id, {"template": "", "cover": ""})
+        self.assertEqual(self.project.book_settings(draft.id), {})
+
+        self.project.set_setting("book_settings", "{not json")
+        self.assertEqual(self.project.book_settings(draft.id), {})
+
+    def test_doc_template_set_through_update_document(self):
+        draft = self.project.documents()[0]
+        chapter = self.project.add_document("Chapter", draft.id, "chapter")
+        self.assertEqual(chapter.doc_template, "")
+        self.project.update_document(chapter.id, doc_template="bare")
+        found = next(d for d in self.project.documents() if d.id == chapter.id)
+        self.assertEqual(found.doc_template, "bare")
+
+    def test_effective_cover_autodetects_then_honours_explicit_path(self):
+        draft = self.project.documents()[0]
+        self.assertIsNone(self.project.effective_cover(draft.id))
+
+        images = self.project.root / "images" / draft.id
+        images.mkdir(parents=True)
+        (images / "cover.png").write_bytes(b"png-bytes")
+        self.assertEqual(self.project.effective_cover(draft.id),
+                         images / "cover.png")
+
+        self.project.set_book_settings(draft.id, {"cover": "covers/missing.jpg"})
+        self.assertIsNone(self.project.effective_cover(draft.id))
+
+        explicit = self.project.root / "covers" / "missing.jpg"
+        explicit.parent.mkdir(parents=True)
+        explicit.write_bytes(b"jpg-bytes")
+        self.assertEqual(self.project.effective_cover(draft.id), explicit)
+
+
 if __name__ == "__main__":
     unittest.main()

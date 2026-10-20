@@ -60,6 +60,19 @@ PAGE_BREAK_VALUES = ("auto", "left", "right", "next-odd", "next-even")
 # settings will override this per document later; folders and notes stay out.
 EXPORT_KINDS = {"chapter", "scene"}
 
+# Auto-detected cover filenames under images/<folder_id>/ (2.1).
+COVER_SUFFIXES = ("jpg", "jpeg", "png", "webp", "gif")
+
+# Export-format word -> template-variant folder titles to try, in order
+# (2.1): a matched template's "ebook" subfolder applies to EPUB exports,
+# and the plain format word is the natural second guess.
+FORMAT_VARIANT_NAMES = {
+    "text": ("text", "txt", "plain"),
+    "html": ("html", "web"),
+    "docx": ("docx", "print"),
+    "epub": ("ebook", "epub"),
+}
+
 
 @dataclass(frozen=True)
 class Document:
@@ -68,7 +81,10 @@ class Document:
     ``parent_id`` is None for a top-level item; ``position`` is the rank
     among siblings under that parent, and is what binder order follows.
     ``kind`` is a label (folder/chapter/scene/note), not structure — any
-    kind may contain any other.
+    kind may contain any other. ``is_templates_root`` lifts a folder into
+    the special TEMPLATES area (2.1), listed below the regular folders;
+    ``doc_template`` names the document-level rendering slot picked in
+    the sidebar.
     """
     id: str
     parent_id: str | None
@@ -79,6 +95,8 @@ class Document:
     kind: str
     word_count: int = 0
     page_break: str = "auto"
+    is_templates_root: bool = False
+    doc_template: str = ""
 
 
 @dataclass(frozen=True)
@@ -153,6 +171,8 @@ class Project:
                 word_count INTEGER NOT NULL DEFAULT 0,
                 kind TEXT NOT NULL DEFAULT 'scene',
                 page_break TEXT NOT NULL DEFAULT 'auto',
+                is_templates_root INTEGER NOT NULL DEFAULT 0,
+                doc_template TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -194,6 +214,20 @@ class Project:
         if "page_break" not in columns:
             self.connection.execute(
                 "ALTER TABLE documents ADD COLUMN page_break TEXT NOT NULL DEFAULT 'auto'"
+            )
+        if "is_templates_root" not in columns:
+            # The special TEMPLATES area (2.1): flagged folders are listed
+            # below the regular folders and never export as manuscript.
+            self.connection.execute(
+                "ALTER TABLE documents ADD COLUMN is_templates_root"
+                " INTEGER NOT NULL DEFAULT 0"
+            )
+        if "doc_template" not in columns:
+            # Document-level rendering template from the sidebar (2.1):
+            # a named slot in the template set's documents/ directory.
+            self.connection.execute(
+                "ALTER TABLE documents ADD COLUMN doc_template"
+                " TEXT NOT NULL DEFAULT ''"
             )
         metadata_columns = {
             row[1] for row in self.connection.execute("PRAGMA table_info(document_metadata)")
@@ -294,7 +328,8 @@ class Project:
         """
         rows = self.db.execute(
             "SELECT id,parent_id,title,synopsis,position,word_target,kind,"
-            "word_count,page_break FROM documents"
+            "word_count,page_break,is_templates_root,doc_template"
+            " FROM documents"
         ).fetchall()
         by_parent: dict[str | None, list[Document]] = {}
         for row in rows:
@@ -314,11 +349,13 @@ class Project:
     def update_document(self, document_id: str, *, title: str | None = None,
                         synopsis: str | None = None,
                         word_target: int | None = None,
-                        page_break: str | None = None) -> None:
+                        page_break: str | None = None,
+                        doc_template: str | None = None) -> None:
         """Set the given properties on a document; None means leave alone.
 
-        Title, synopsis, word target and page start only — prose is never
-        touched here, it goes through write_content().
+        Title, synopsis, word target, page start and the document-level
+        template only — prose is never touched here, it goes through
+        write_content().
         """
         fields: list[str] = []
         values: list[str] = []
@@ -336,6 +373,9 @@ class Project:
                 raise ValueError(f"Unknown page start: {page_break}")
             fields.append("page_break=?")
             values.append(page_break)
+        if doc_template is not None:
+            fields.append("doc_template=?")
+            values.append(doc_template)
         if not fields:
             return
         fields.append("updated_at=?")
@@ -410,7 +450,8 @@ class Project:
             return None
         sibling = self.db.execute(
             "SELECT id,parent_id,title,synopsis,position,word_target,kind,"
-            "word_count,page_break FROM documents WHERE parent_id IS ? AND position>? "
+            "word_count,page_break,is_templates_root,doc_template"
+            " FROM documents WHERE parent_id IS ? AND position>? "
             "ORDER BY position LIMIT 1", (row[0], row[1]),
         ).fetchone()
         return Document(**dict(sibling)) if sibling else None
@@ -503,7 +544,8 @@ class Project:
         self.delete_document(second_id)
         row = self.db.execute(
             "SELECT id,parent_id,title,synopsis,position,word_target,kind,"
-            "word_count,page_break FROM documents WHERE id=?", (first_id,),
+            "word_count,page_break,is_templates_root,doc_template"
+            " FROM documents WHERE id=?", (first_id,),
         ).fetchone()
         return Document(**dict(row))
 
@@ -926,6 +968,110 @@ class Project:
             "project_metadata",
             json.dumps(payload, ensure_ascii=False, indent=1),
         )
+
+    def set_templates_root(self, document_id: str, flagged: bool) -> None:
+        """Flag or unflag a folder as the special TEMPLATES area (2.1).
+
+        Flagged folders render below the regular folders in the binder and
+        outliner, and their subtree never exports as manuscript — template
+        pages reach output only through a book's compile settings.
+        """
+        self.db.execute(
+            "UPDATE documents SET is_templates_root=? WHERE id=?",
+            (1 if flagged else 0, document_id),
+        )
+
+    def book_settings(self, document_id: str) -> dict[str, str]:
+        """Compile settings for one book folder (2.1).
+
+        One JSON string in the existing settings table — the
+        project_metadata precedent — so there is no schema change and junk
+        degrades to no settings. Keys: "template" (a template folder id
+        that overrides the automatic title match) and "cover" (explicit
+        image path; empty means auto-detect images/<folder_id>/cover.*).
+        """
+        raw = self.get_setting("book_settings")
+        try:
+            stored = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            stored = {}
+        if not isinstance(stored, dict):
+            stored = {}
+        row = stored.get(document_id)
+        if not isinstance(row, dict):
+            return {}
+        return {
+            key: str(row[key])
+            for key in ("template", "cover")
+            if isinstance(row.get(key), str)
+        }
+
+    def set_book_settings(self, document_id: str,
+                          settings: dict[str, str] | None) -> None:
+        """Replace one folder's book settings; None or all-blank removes
+        the entry, so the folder falls back to automatic matching."""
+        raw = self.get_setting("book_settings")
+        try:
+            stored = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            stored = {}
+        if not isinstance(stored, dict):
+            stored = {}
+        cleaned = {
+            key: str(value).strip()
+            for key, value in (settings or {}).items()
+            if key in ("template", "cover") and str(value).strip()
+        }
+        if cleaned:
+            stored[document_id] = cleaned
+        else:
+            stored.pop(document_id, None)
+        self.set_setting(
+            "book_settings",
+            json.dumps(stored, ensure_ascii=False, indent=1),
+        )
+
+    def templates_roots(self) -> list[Document]:
+        """Folders flagged as the special TEMPLATES area (2.1), in binder
+        order — normally exactly one."""
+        return [d for d in self.documents() if d.is_templates_root]
+
+    def template_folders(self) -> list[Document]:
+        """Direct children of every templates root: each is one named
+        template ("default", "Marginally Human", "Novellas"…).
+
+        A template folder's subfolders are its export-format variants
+        ("ebook" replaces the template's basic content when it matches the
+        export format), and a child folder titled "Back matter" marks the
+        pages that go after the book; everything else is front matter.
+        """
+        children: dict[str | None, list[Document]] = {}
+        for document in self.documents():
+            children.setdefault(document.parent_id, []).append(document)
+        result: list[Document] = []
+        for root in self.templates_roots():
+            result.extend(sorted(children.get(root.id, []),
+                                  key=lambda d: d.position))
+        return result
+
+    def effective_cover(self, document_id: str) -> Path | None:
+        """The book's cover image (2.1): an explicit path from book
+        settings if that file exists, otherwise the conventional
+        images/<folder_id>/cover.* — the stand-in for "an image present
+        in the folder"."""
+        raw = self.book_settings(document_id).get("cover", "").strip()
+        if raw:
+            path = Path(raw)
+            if not path.is_absolute():
+                path = self.root / path
+            return path if path.is_file() else None
+        directory = self.root / "images" / document_id
+        if directory.is_dir():
+            for suffix in COVER_SUFFIXES:
+                candidate = directory / f"cover.{suffix}"
+                if candidate.is_file():
+                    return candidate
+        return None
 
     def set_metadata(self, document_id: str, values: dict[str, str],
                      value_types: dict[str, str] | None = None,
