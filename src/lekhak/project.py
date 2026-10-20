@@ -857,8 +857,10 @@ class Project:
     def metadata_entries(self, document_id: str) -> dict[str, tuple[str, str, list[str]]]:
         """One document's metadata: key -> (value, value_type, options).
 
-        ``value_type`` is "text", "textarea", "checkbox", "date" or
-        "choice"; ``options`` holds the allowed values for a choice.
+        ``value_type`` is "text", "textarea", "checkbox" or "date";
+        ``options`` belongs to the removed Dropdown type and is now
+        always an empty list — legacy "choice" rows keep their stored
+        value but load in the panel as text.
         """
         rows = self.db.execute(
             "SELECT key,value,value_type,options_json FROM document_metadata "

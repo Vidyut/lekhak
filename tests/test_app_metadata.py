@@ -146,20 +146,17 @@ class MetadataPanelTests(unittest.TestCase):
 
         self.assertEqual(self.project.metadata_entries(self.scene.id), {})
 
-    def test_dropdown_value_widget_change_persists(self):
+    def test_legacy_dropdown_rows_load_as_plain_text(self):
         self.project.set_metadata(
             self.scene.id, {"Status": "Draft"}, {"Status": "choice"},
             {"Status": ["Draft", "Final"]},
         )
         self.window._select_document(self.scene.id)
 
-        value_widget = self.window.metadata_table.cellWidget(0, 1)
-        self.assertIsInstance(value_widget, QComboBox)
-        value_widget.setCurrentText("Final")
-
-        self.assertEqual(
-            self.project.metadata_entries(self.scene.id)["Status"][0], "Final"
-        )
+        type_box = self.window.metadata_table.cellWidget(0, 2)
+        self.assertIsInstance(type_box, QComboBox)
+        self.assertEqual(type_box.currentData(), "text")
+        self.assertEqual(self.window.metadata_table.item(0, 1).text(), "Draft")
 
     def test_metadata_widgets_disabled_without_a_project(self):
         window = MainWindow()
@@ -170,18 +167,17 @@ class MetadataPanelTests(unittest.TestCase):
         window.project = None
 
     def test_dialog_edits_the_same_rows_through_the_shared_table(self):
-        entries = {"POV": ("Maya", "text", []),
-                   "Status": ("Draft", "choice", ["Draft", "Final"])}
+        entries = {"POV": ("Maya", "text", [])}
 
         dialog = MetadataDialog(entries)
 
         self.assertEqual(dialog.values_types_options(), (
-            {"POV": "Maya", "Status": "Draft"},
-            {"POV": "text", "Status": "choice"},
-            {"POV": [], "Status": ["Draft", "Final"]},
+            {"POV": "Maya"},
+            {"POV": "text"},
+            {"POV": []},
         ))
         dialog.table.add_field()
-        self.assertEqual(dialog.table.rowCount(), 3)
+        self.assertEqual(dialog.table.rowCount(), 2)
         dialog.deleteLater()
 
     def test_edit_metadata_target_follows_the_selection(self):
@@ -247,13 +243,13 @@ class MetadataPanelTests(unittest.TestCase):
             ("one\ntwo\nthree", "textarea", []),
         )
 
-    def test_type_combo_offers_all_five_types(self):
+    def test_type_combo_offers_the_four_types(self):
         self.window._select_document(self.scene.id)
         self.window.metadata_table.add_field()
 
         type_box = self.window.metadata_table.cellWidget(0, 2)
         values = [type_box.itemData(index) for index in range(type_box.count())]
-        self.assertEqual(values, ["text", "textarea", "checkbox", "date", "choice"])
+        self.assertEqual(values, ["text", "textarea", "checkbox", "date"])
 
     def test_switching_a_row_to_checkbox_round_trips_the_value(self):
         self.project.set_metadata(self.scene.id, {"Done": "maybe"})
@@ -273,8 +269,8 @@ class MetadataPanelTests(unittest.TestCase):
 
     def test_column_order_puts_value_next_to_the_field(self):
         table = self.window.metadata_table
-        headers = [table.horizontalHeaderItem(i).text() for i in range(4)]
-        self.assertEqual(headers, ["Field", "Value", "Type", "Choices"])
+        headers = [table.horizontalHeaderItem(i).text() for i in range(3)]
+        self.assertEqual(headers, ["Field", "Value", "Type"])
 
     def test_scrivener_long_date_opens_in_the_picker_as_a_real_date(self):
         self.project.set_metadata(

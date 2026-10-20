@@ -335,13 +335,15 @@ Known edges (refine later): the 4-column grid is cramped at the default
 270 px splitter width; folder documents' own metadata rows stay in storage
 and in search but no longer have UI (the request moves folders to
 project-level fields); project-level fields are not searchable.
-**Follow-up (2026-10-20):** column order is now Field | Value | Type |
-Choices — "seeing name:value next to each other is efficient"; "Allowed
-options" became "Choices" because the old name meant nothing to the
-author; the Value column stretches while Field/Type size to content.
-Dates open as a real picker even for Scrivener's long format
-("Wednesday, January 7, 2443" parses via a second format and
-normalises to ISO on the next save).
+**Follow-up (2026-10-20):** column order is now Field | Value | Type —
+"seeing name:value next to each other is efficient" — with the Value
+column stretching while Field/Type size to content. The Dropdown type
+and its options column ("Allowed options", briefly renamed "Choices")
+are removed at the author's request: no field in their corpus wants a
+fixed vocabulary, and a stored legacy "choice" row loads as Text and
+heals on the next save. Dates open as a real picker even for
+Scrivener's long format ("Wednesday, January 7, 2443" parses via a
+second format and normalises to ISO on the next save).
 
 ### 1.13 Auto-linked related files (title mentions) — DONE
 **Request:** "auto-linking/tagging — if a file contains words that are an
@@ -381,8 +383,9 @@ a multi-line text area, and a checkbox that stores "yes"/"no". The
 storage column was already free-form, so nothing about the project
 format changes; this is a panel feature only.
 **Implemented (2026-10-20):** the Type combo in the shared metadata
-table (inspector and Edit Metadata dialog alike) now offers Text, Text
-area, Checkbox, Date, Dropdown. The text area is an inline
+table (inspector and Edit Metadata dialog alike) offers Text, Text
+area, Checkbox and Date — Dropdown, part of 1.12, was removed the same
+day as useless to the author. The text area is an inline
 QPlainTextEdit with a taller row that commits when the caret leaves the
 widget — the line edit's editingFinished equivalent — so live-save in
 the inspector never runs per keystroke. The checkbox stores "yes"/"no"
