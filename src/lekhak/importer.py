@@ -220,3 +220,18 @@ def import_book(project: Project, raw_documents: list[RawDocument],
         project.write_content(document.id, markdown_to_html(raw.body))
         stack.append((raw.title, document.id))
     return folder.id
+
+
+def import_all_books(project: Project,
+                     raw_documents: list[RawDocument]) -> list[str]:
+    """Import every book in a dump, each as a top-level folder.
+
+    This is the normal path: the author hands over one file containing
+    their whole library and expects Lekhak to do the splitting, so the
+    caller never has to know what books the dump contains. Returns the
+    book folder ids in binder order.
+    """
+    return [
+        import_book(project, raw_documents, book)
+        for book in dump_books(raw_documents)
+    ]

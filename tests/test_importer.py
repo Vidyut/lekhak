@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from lekhak.importer import (
-    dump_books, import_book, markdown_to_html, parse_dump,
+    dump_books, import_all_books, import_book, markdown_to_html, parse_dump,
 )
 from lekhak.project import Project
 
@@ -340,6 +340,14 @@ class ImportBookTests(unittest.TestCase):
         # 1 seeded Draft folder + 2 book folders + every block once (5)
         self.assertEqual(len(self.project.documents()), 1 + 2 + 5)
 
+    def test_import_all_books_creates_one_folder_per_book(self):
+        folders = import_all_books(self.project, self.raws)
+
+        self.assertEqual(len(folders), 2)
+        titles = [d.title for d in self.project.documents()
+                  if d.id in set(folders)]
+        self.assertEqual(titles, ["Book A", "Book B"])
+
 
 class FullCorpusTests(unittest.TestCase):
     """The author's real dump, when present — the load fixture role."""
@@ -357,7 +365,7 @@ class FullCorpusTests(unittest.TestCase):
         self.temporary.cleanup()
 
     @unittest.skipUnless(DUMP.exists(), "author's dump not present")
-    def test_full_corpus_parses_and_one_book_imports(self):
+    def test_full_corpus_imports_every_book_with_no_header_leaks(self):
         raws = parse_dump(self.DUMP)
         self.assertEqual(len(raws), 326)
         self.assertEqual(
@@ -365,23 +373,19 @@ class FullCorpusTests(unittest.TestCase):
             ["Marginally Human", "Terminally-Immortal", "Manuscript"],
         )
 
-        folder_id = import_book(self.project, raws, "Terminally-Immortal")
-        imported = [
-            doc for doc in self.project.documents()
-            if doc.id == folder_id or self._is_under(doc.id, folder_id)
-        ]
-        self.assertEqual(len(imported), 109)   # folder + 108 documents
-        prose = [doc for doc in imported if doc.kind == "scene" and doc.word_count > 50]
-        self.assertGreater(len(prose), 50)     # real prose actually landed
-
-    def _is_under(self, document_id, ancestor_id) -> bool:
-        by_id = {doc.id: doc for doc in self.project.documents()}
-        current = by_id.get(document_id)
-        while current and current.parent_id:
-            if current.parent_id == ancestor_id:
-                return True
-            current = by_id.get(current.parent_id)
-        return False
+        folders = import_all_books(self.project, raws)
+        self.assertEqual(len(folders), 3)
+        documents = self.project.documents()
+        # 1 seeded Draft + 3 book folders + every block once
+        self.assertEqual(len(documents), 1 + 3 + 326)
+        prose = [doc for doc in documents if doc.kind == "scene" and doc.word_count > 50]
+        self.assertGreater(len(prose), 100)   # real prose actually landed
+        # The dump's meta fields are headers, never prose: nothing from
+        # them may survive inside any stored document.
+        for doc in documents:
+            content = self.project.read_content(doc.id)
+            for header_junk in ("ParentPosition", "===DOCUMENT===", "\nType: "):
+                self.assertNotIn(header_junk, content, doc.title)
 
 
 if __name__ == "__main__":

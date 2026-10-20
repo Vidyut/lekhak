@@ -1,8 +1,9 @@
 """2.3 Scrivener dump importer: the File-menu flows — offscreen GUI.
 
-Dialogs are patched at the class level (getOpenFileName, getItem,
-getExistingDirectory) so no modal ever runs; the window is never
-close()'d, per the shared GUI-test contract.
+The menu imports the whole dump and splits it into books itself; only
+the file picker (and the new-project title/location dialogs) are
+patched, so no modal ever runs. The window is never close()'d, per the
+shared GUI-test contract.
 """
 
 import os
@@ -97,6 +98,42 @@ Synopsis:
 ===TEXT===
 
 More words.
+
+===DOCUMENT===
+
+Type: Chapter
+
+ID: 3
+
+Position: 1
+
+ParentPosition: 0
+
+Parent: Second Book
+
+Title: Other Start
+
+PoV: 
+
+Location: 
+
+Date: 
+
+Quote: 
+
+Source: 
+
+Status: No Status
+
+Label: 
+
+Keywords: 
+
+Synopsis: 
+
+===TEXT===
+
+Third document.
 """
 
 
@@ -114,61 +151,56 @@ class ImportMenuTests(unittest.TestCase):
         self.project.close()
         self.temporary.cleanup()
 
-    def _patch_dump_dialogs(self, book="Mini Book"):
-        return (
-            mock.patch("lekhak.app.QFileDialog.getOpenFileName",
-                       return_value=(str(self.dump_path), "Scrivener dump (*.md)")),
-            mock.patch("lekhak.app.QInputDialog.getItem",
-                       return_value=(book, True)),
+    def _patch_file_dialog(self):
+        return mock.patch(
+            "lekhak.app.QFileDialog.getOpenFileName",
+            return_value=(str(self.dump_path), "Scrivener dump (*.md)"),
         )
 
-    def test_import_into_open_project_adds_the_book_folder(self):
-        open_dialog, pick_book = self._patch_dump_dialogs()
-
-        with open_dialog, pick_book:
+    def test_import_splits_every_book_into_its_own_folder(self):
+        with self._patch_file_dialog():
             self.window.import_scrivener_dump()
 
-        folder = next(d for d in self.project.documents() if d.title == "Mini Book")
-        self.assertEqual(folder.kind, "folder")
-        self.assertEqual(self.window.current_id, folder.id)
-        chapter = next(d for d in self.project.documents()
-                       if d.parent_id == folder.id)
-        self.assertEqual(chapter.title, "Start")
-        self.assertEqual(chapter.kind, "chapter")
+        folders = {d.title: d for d in self.project.documents() if d.kind == "folder"}
+        self.assertIn("Mini Book", folders)
+        self.assertIn("Second Book", folders)
+        # First book's chapter lands under the first book, not the second
+        chapters = [d for d in self.project.documents()
+                    if d.parent_id == folders["Mini Book"].id]
+        self.assertEqual([d.title for d in chapters], ["Start"])
+        self.assertEqual(self.window.current_id, folders["Mini Book"].id)
 
     def test_import_without_a_project_is_a_no_op(self):
         self.window.project = None
-        open_dialog, _ = self._patch_dump_dialogs()
-
-        with open_dialog as dialog:
+        with self._patch_file_dialog() as dialog:
             self.window.import_scrivener_dump()
 
         dialog.assert_not_called()
 
-    def test_import_into_new_project_switches_to_it(self):
-        open_dialog, pick_book = self._patch_dump_dialogs()
-        destination = Path(self.temporary.name) / "fresh"
-
-        with open_dialog, pick_book, mock.patch(
+    def test_import_into_new_project_uses_the_dump_name_by_default(self):
+        with self._patch_file_dialog(), mock.patch(
             "lekhak.app.QFileDialog.getExistingDirectory",
-            return_value=str(destination),
+            return_value=str(Path(self.temporary.name) / "fresh"),
+        ), mock.patch(
+            "lekhak.app.QInputDialog.getText", return_value=("mini", True)
         ):
             self.window.import_scrivener_dump_new_project()
 
-        self.assertEqual(self.window.project.root, destination / "Mini Book.lekhak")
-        folder = next(d for d in self.window.project.documents()
-                      if d.title == "Mini Book")
-        self.assertEqual(folder.kind, "folder")
+        self.assertEqual(self.window.project.root,
+                         Path(self.temporary.name) / "fresh" / "mini.lekhak")
+        titles = {d.title for d in self.window.project.documents()
+                  if d.kind == "folder" and d.title != "Draft"}
+        self.assertEqual(titles, {"Mini Book", "Second Book"})
 
-    def test_cancelling_the_book_picker_imports_nothing(self):
-        open_dialog, _ = self._patch_dump_dialogs()
-        with open_dialog, mock.patch(
-            "lekhak.app.QInputDialog.getItem", return_value=("", False)
-        ):
+    def test_cancelling_the_file_picker_imports_nothing(self):
+        with mock.patch("lekhak.app.QFileDialog.getOpenFileName",
+                        return_value=("", "")):
             self.window.import_scrivener_dump()
 
         self.assertEqual(
-            [d.title for d in self.project.documents() if d.title == "Mini Book"], []
+            [d for d in self.project.documents()
+             if d.kind == "folder" and d.title != "Draft"],
+            []
         )
 
 

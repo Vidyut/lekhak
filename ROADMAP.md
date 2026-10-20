@@ -428,15 +428,29 @@ markdown-ish bodies converted to the rich text Lekhak stores: paragraphs,
 ancestor-stack walk — parent-by-title is safe because the dump is
 depth-first binder order, verified against the full 326-document corpus
 with zero orphans. Books appear only as parent titles (folders are never
-in the dump); each import creates the book as a folder and imports one
-book per run, so duplicate chapter titles across books cannot cross-wire.
+in the dump); the import rebuilds every book as its own folder — the
+splitting is the app's job, per the author's correction on first use
+("I don't know how to split it when I import… I thought you would do
+it"), not a book-by-book picker. Duplicate chapter titles across books
+cannot cross-wire because each book is placed by its own stack pass.
 Scrivener's unset sentinels ("No Status", "No Label", PoV "None") are
 dropped rather than stored; every real value (PoV, Location, Date, Quote,
 Source, Keywords, custom outline keys) lands in document_metadata, and
-Synopsis lands in the synopsis column. File menu: "Import Scrivener
-Dump…" into the open project, and "…into New Project…" which creates a
-fresh `.lekhak` named after the book. Still open in this item: plain
-Markdown import, `.yw7`, `.scriv` XML, clean Markdown export, PDF.
+Synopsis lands in the synopsis column — the meta fields are headers and
+never leak into prose (asserted by test). Whole-library import of the
+author's real dump: 3 books, 330 documents, 406k words in ~0.15s — the
+2.6MB file is not too big. File menu: "Import Scrivener Dump…" into the
+open project, and "…into New Project…" which creates a fresh `.lekhak`
+named after the dump file. Still open in this item: plain Markdown
+import, `.yw7`, `.scriv` XML, clean Markdown export, PDF.
+**Design note for the Markdown import (author's idea, 2026-10-20):**
+"insert specific strings as dividers for the splitter — [this string]
+begins a chapter, [that string] begins a scene." The importer should
+not impose a heading convention: the writer names the divider strings
+(defaults `#` for a chapter, `##` for a scene) in a small import dialog
+and the file splits on those, pandoc-free, everything between dividers
+becoming the document's prose. Same placement stack as the dump import
+once the blocks exist.
 
 ### 2.4 Tracked edits with accept/reject, and AI as a source of them
 **Request:** "eventually, AI integration and tracked edits to
