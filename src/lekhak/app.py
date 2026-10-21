@@ -68,6 +68,7 @@ from .importer import (
     dump_books, import_all_books, import_markdown_file, parse_dump,
 )
 from .ywriter import import_yw7, parse_yw7
+from .scrivener import import_scriv, parse_scriv
 from .project import DEFAULT_LINK_POLICY, EXPORT_KINDS, Project
 from .templates import (
     DOCUMENT_TEMPLATE_NAME_RE, EXTENSIONS, PLACEHOLDER_RE, SLOTS,
@@ -1972,6 +1973,10 @@ class MainWindow(QMainWindow):
                      self.import_ywriter)
         self._action(file_menu, "Import yWriter Project into New Project…",
                      None, self.import_ywriter_new_project)
+        self._action(file_menu, "Import Scrivener Project…", None,
+                     self.import_scrivener)
+        self._action(file_menu, "Import Scrivener Project into New Project…",
+                     None, self.import_scrivener_new_project)
         file_menu.addSeparator()
         self._action(file_menu, "Quit", QKeySequence.Quit, self.close)
 
@@ -3464,6 +3469,56 @@ class MainWindow(QMainWindow):
             project = Project.create(Path(selected) / title.strip(),
                                      title.strip())
             folder_id = import_yw7(project, Path(path), title=title.strip())
+            self._switch_project(project)
+            self._reload_tree(select_id=folder_id)
+        except Exception as error:
+            QMessageBox.critical(self, "Could not import project",
+                                 str(error))
+            return
+        self.statusBar().showMessage(f"Imported into {title.strip()}", 5000)
+
+    def import_scrivener(self) -> None:
+        """Import a Scrivener 3 project into the open project (2.3)."""
+        if not self.project:
+            return
+        path = QFileDialog.getExistingDirectory(
+            self, "Import Scrivener project (.scriv folder)")
+        if not path:
+            return
+        try:
+            self.save_current()
+            folder_id = import_scriv(self.project, Path(path))
+        except Exception as error:
+            QMessageBox.critical(self, "Import failed", str(error))
+            return
+        self._reload_tree(select_id=folder_id)
+        self.statusBar().showMessage(f"Imported {Path(path).name}", 5000)
+
+    def import_scrivener_new_project(self) -> None:
+        """Import a Scrivener 3 project as a brand new project (2.3)."""
+        path = QFileDialog.getExistingDirectory(
+            self, "Import Scrivener project (.scriv folder)")
+        if not path:
+            return
+        try:
+            parsed = parse_scriv(Path(path))
+        except Exception as error:
+            QMessageBox.critical(self, "Import failed", str(error))
+            return
+        title, accepted = QInputDialog.getText(
+            self, "Project title", "Title:",
+            text=parsed.title or Path(path).stem)
+        if not accepted or not title.strip():
+            return
+        selected = QFileDialog.getExistingDirectory(
+            self, "Choose location for the new project")
+        if not selected:
+            return
+        try:
+            project = Project.create(Path(selected) / title.strip(),
+                                     title.strip())
+            folder_id = import_scriv(project, Path(path),
+                                     title=title.strip())
             self._switch_project(project)
             self._reload_tree(select_id=folder_id)
         except Exception as error:
