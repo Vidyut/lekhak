@@ -745,9 +745,26 @@ vocabulary, not the project's actual `Metadata.*` key names.
 
 ## Phase 3 — wish-fulfilling fairy software
 
-### 3.1 Text to speech
-Read the current scene or selection aloud. Qt ships `QTextToSpeech`, so this
-is likely a thin wrapper with a voice picker and a play/stop/pause toolbar.
+### 3.1 Text to speech — DONE
+**Request:** "Read the current scene or selection aloud."
+**Implemented (2026-10-20):** one commit (`4fd24b5`). Speak menu:
+Read Aloud (F8) speaks the selection, else the whole scene; Pause /
+Resume (F9); Stop. Qt's `QTextToSpeech` behind a thin `SpeechReader`
+(`src/lekhak/tts.py`) — the `speechd` engine when the system has it
+(speech-dispatcher + espeak-ng are installed on the author's machine:
+420 voices), any other engine as fallback, a status-bar message when
+none exists. Built lazily on first use so the speechd handshake never
+taxes startup. Preferences holds the voice picker and a rate slider
+(−1.0…1.0 shown as a ×multiplier); document switches and window close
+stop the engine. Live smoke: the real engine connects and speaks.
+Tests: `tests/test_tts.py` (9), suite 336.
+**Open edges (read aloud):** the whole-scene fallback reads the
+accepted rendering including resolved link text; pause support depends
+on the backend (speechd's varies by version — a failed pause is
+silent); no per-sentence highlighting or click-to-resume-from-here;
+the engine choice is not exposed in the UI (QSettings `tts/engine`,
+default `speechd`); voice list is all 420 system voices with no
+language filter.
 
 ### 3.2 Everything else in the wish list
 Anything above that didn't earn a slot gets collected here as it arrives.
