@@ -2282,7 +2282,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not create project", str(error))
 
     def open_project(self) -> None:
-        selected = QFileDialog.getExistingDirectory(self, "Open .lekhak or .manuscript project")
+        selected = QFileDialog.getExistingDirectory(self, "Open .lekhak project")
         if not selected:
             return
         try:

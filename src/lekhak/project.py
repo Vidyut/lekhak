@@ -295,7 +295,7 @@ class Project:
     def create(cls, root: Path, title: str = "Untitled Project") -> "Project":
         """Make a new project directory and seed it with an empty Draft folder."""
         root = Path(root)
-        if root.suffix not in {".lekhak", ".manuscript"}:
+        if root.suffix != ".lekhak":
             root = root.with_suffix(".lekhak")
         if root.exists() and any(root.iterdir()):
             raise FileExistsError(f"Project directory is not empty: {root}")
