@@ -522,7 +522,7 @@ book's; the exact-title-only rule means a deliberately shortened
 `[[Chapter]]` for "Chapter Two" is an unresolved link and follows the policy
 rather than silently picking a target.
 
-### 2.3 Importers and full round-trip export
+### 2.3 Importers and full round-trip export — DONE
 **Request:** "eventually, importer/exporter." Then: "I can give you a huge
 dump from Scrivener… books + WIPs (so you can also test behaviour under
 load…) Or we can do just one book at a time." And: "Don't import the old
@@ -572,7 +572,8 @@ as text ("dates changed to dates directly"). Whole-library import of the
 author's real dump: 3 books, 330 documents, 406k words in ~0.15s — the
 2.6MB file is not too big. File menu: "Import Scrivener Dump…" into the
 open project, and "…into New Project…" which creates a fresh `.lekhak`
-named after the dump file. Still open in this item: `.scriv` XML, PDF.
+named after the dump file. Still open in this item: PDF (deferred,
+same as the export side — no PDF writer yet).
 **Design note for the Markdown import (author's idea, 2026-10-20):**
 "insert specific strings as dividers for the splitter — [this string]
 begins a chapter, [that string] begins a scene." The importer should
@@ -632,6 +633,29 @@ XML error quoted; part-level chapters (`SectionStart`) import flat as
 chapters rather than as folders; character/location/item reference
 data and chapter Descs are not imported; yWriter 5 side-car RTF files
 are not read (6+ inline content only).
+**Scrivener 3 import implemented (2026-10-20):** one commit
+(`54a6c18`). File → "Import Scrivener Project…" / "…into New
+Project…": the `.scriv` folder package read directly — `.scrivx`
+binder walked down the DraftFolder subtree only (Research, Trash and
+the rest stay out, as in Scrivener's own compile), Folder→folder and
+Text→scene in binder order, `Files/Data/<UUID>/content.rtf` through a
+new minimal RTF converter (paragraphs, bold, italic, line breaks,
+cp1252 hex escapes, `\uN` with uc fallback skips, Scrivener's named
+characters, destination groups dropped whole), `synopsis.txt` as the
+document's synopsis. Smoke on the author's real
+`Abrahamhas-strays.scriv`: 50 folders, 325 scenes, **408k words in
+0.46s** — the same corpus size the dump import reports, a cross-check
+between the two paths — exporting to 2.4MB of clean markdown in 0.05s.
+Tests: `tests/test_scrivener_import.py` (16), suite 327.
+**Open edges (Scrivener import):** only the DraftFolder subtree is
+read — a manuscript kept in a top-level binder Folder (as in the
+author's `AxAm-trilogy.scriv`, whose DraftFolder is empty and whose
+prose sits in "Recovered Files") must be moved under the Manuscript
+in Scrivener first; adjacent RTF runs with the same style are wrapped
+per run rather than merged (renders identically, cosmetically noisy
+HTML); RTF read as latin-1 with errors replaced — exotic codepages
+beyond cp1252 hex escapes may garble; snapshots, notes.rtf,
+content.styles and compile-format metadata are not imported.
 
 ### 2.4 Tracked edits with accept/reject, and AI as a source of them — DONE
 **Request:** "eventually, AI integration and tracked edits to
