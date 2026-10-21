@@ -195,6 +195,24 @@ PDF takes that DOCX through whatever converter they already have. This
 makes DOCX fidelity the priority for this item and for 1.7's page
 numbers; a future PDF export, if it ever happens, is a thin wrapper over
 this DOCX, not a parallel renderer.
+**Superseded 2026-10-21 — PDF landed, on exactly those terms.** The
+author chose the LibreOffice route knowing the deferral's own words.
+Implemented (`6e2e81c`): File → Export PDF… runs the normal DOCX
+compile into a scratch dir and converts it with the first LibreOffice
+on PATH that answers `--version` (deb/snap/tarball names both
+`libreoffice` and `soffice`; a found-but-broken candidate — the snap
+shim on this machine — is reported with its real stderr plus the install
+hint). Private LibreOffice profile, atomic `os.replace`, scratch
+cleaned in `finally`. Tests: 7 in `tests/test_pdf.py` against a stub
+converter (suite 343). **Open edges:** the live conversion is unsmoked
+until LibreOffice is installable here (the snap is dead on this host —
+classic confinement expecting host libicu74/libxml2.so.2, which the
+current distro no longer ships — and sudo is unavailable inside the
+sandbox, so a `sudo apt install libreoffice-writer` by the author is
+the fix); whether LibreOffice refreshes the DOCX TOC field (1.7's page
+numbers) during headless conversion is unverified; no page-size /
+mirror-margin presets behind the export (none exist for DOCX either —
+see1.6's scope note).
 **Implemented (2026-10-20):** `page_break` is a documents column (guarded
 migration, default `auto`) carried on `Document`, written through
 `update_document`, chosen in the inspector's "Page start" combo and saved
@@ -220,9 +238,10 @@ non-empty it is rendered as the first content page with `${Entries}` —
 one internal link per unit — on top of the spec-required nav document.
 DOCX: export inserts a real Word TOC field (`TOC \o "1-3" \z \u`, no
 `\h`, so it shows page numbers only), populated by Word or LibreOffice on
-field update. **Open:** PDF export does not exist yet (1.6); when it lands,
-the LibreOffice route inherits the DOCX field, giving page numbers, and an
-EPUB-route PDF can add link annotations.
+field update. **PDF (2026-10-21):** export exists (1.6, LibreOffice
+wrapper) — TOC page numbers ride on LibreOffice refreshing the DOCX
+field during headless conversion, which is the next thing to verify in
+the live smoke; no link annotations yet.
 
 ### 1.9 Resume where you left off — DONE
 **Request:** "When the software is started, resume from where the cursor was
@@ -572,8 +591,9 @@ as text ("dates changed to dates directly"). Whole-library import of the
 author's real dump: 3 books, 330 documents, 406k words in ~0.15s — the
 2.6MB file is not too big. File menu: "Import Scrivener Dump…" into the
 open project, and "…into New Project…" which creates a fresh `.lekhak`
-named after the dump file. Still open in this item: PDF (deferred,
-same as the export side — no PDF writer yet).
+named after the dump file. Still open in this item: nothing — PDF
+joined the export kinds on 2026-10-21 (1.6), so the round trip covers
+text/html/docx/epub/markdown/pdf.
 **Design note for the Markdown import (author's idea, 2026-10-20):**
 "insert specific strings as dividers for the splitter — [this string]
 begins a chapter, [that string] begins a scene." The importer should
@@ -786,8 +806,12 @@ bleed added outside the trim, a check that spine lettering and back-cover
 blurbs stay inside the safe zone, and a PDF at the exact dimensions
 KDP/IngramSpark accept. Front/back/spine laid out from a template per
 trim size; user drops in their artwork and text. Depends on 1.6 (page
-geometry + realistic page count) and on a PDF writer, so it lands after
-both — see the PDF deferral above.
+geometry + realistic page count — still uncaptured; see its scope note)
+and, since 2026-10-21, only on that: the PDF writer now exists
+(LibreOffice wrapper). Whether the cover should ride the same wrapper
+or draw at exact trim size with Qt (a cover is images and a few text
+boxes, not manuscript layout, so a second renderer costs far less there)
+is a decision for when this gets scheduled.
 
 ---
 
