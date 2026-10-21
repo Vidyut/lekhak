@@ -424,6 +424,42 @@ compares and what a transparent project file shows a plain-text editor;
 Switching a row's type carries the current value across where it still
 makes sense and falls back to the neutral default where it does not.
 
+### 1.15 Print geometry: page setup per book — DONE
+**Request:** "We need size, margins and mirror/gutter — whatever print
+on demand needs," escalating a narrower "page size only" ask after the
+author named the interior checklist (KDP/IngramSpark ask every line of
+it before they will print).
+**Add:** per-folder print geometry — trim size, four margins, mirrored
+margins and gutter — stored with the book and stamped onto every DOCX
+export of it. Decisions the author answered directly: paper size,
+margins and mirror/gutter together (the whole POD checklist, not size
+alone); a docx→PDF thin wrapper for the converter (recorded under 1.6).
+**Model:** geometry lives in its own settings key (`page_setup`, one
+JSON dict keyed by folder id) rather than inside `book_settings`,
+whose writer replaces the whole row — a template tweak must not be
+able to wipe the print geometry. One dictionary validates every path
+(`clean_page_setup`): the dialog's accept, storage's set, and the
+export's read all call it, so an entry the dialog allows can never be
+refused later and vice versa. Trims are the KDP/IngramSpark list plus
+A4/A5 and the manuscript standards; anything else is entered as
+width/height (marked Custom). Scope resolution mirrors 2.2's link
+policy — nearest ancestor folder of the exported documents; one file
+carries one paper size, so a mixed multi-book export takes the first
+book in binder order (recorded edge, tested).
+**Implemented (2026-10-21):** the inspector's **Page setup** button
+shows the current geometry as its label ("Page setup — 6 × 9, mirrored,
+gutter 0.25 in") and opens a dialog: trim combo two-way-bound to the
+width/height spins, five margins in inches (1/16 steps), mirror
+checkbox, and a "Use default (no override)" that clears the entry —
+which restores python-docx's Letter template exactly as before the
+slice. Export stamps every section (1.6's ODD/EVEN_PAGE sections
+included): trim and margins in twips, inside margin on the recto's
+spine edge, gutter beside it, `w:mirrorMargins` in settings.xml when
+mirrored, landscape flag when width exceeds height. The PDF route of
+1.6 inherits the size through LibreOffice unchanged — a 6×9 docx
+converts to a 432 pt × ~649 pt PDF (LibreOffice's own rounding),
+verified live.
+
 ## Phase 2 — books, variants, and conditional content
 
 ### 2.1 Book-level compile settings
@@ -816,8 +852,8 @@ them (yet), there is no hurry." A Writer/Word-style layout mode showing
 real pages — the book folder's page size, font size and margins
 rendered as they will print, so placement of illustrations and
 breaks is visible while writing. Depends on 1.15 (page setup data must
-exist per book before anything can render it); editor side needs
-QTextDocument paged view (page size via QTextDocument's paper size +
+exist per book before anything can render it — shipped 2026-10-21);
+editor side needs QTextDocument paged view (page size via QTextDocument's paper size +
 paint margins) — investigate when scheduled.
 
 **Book cover generator (captured 2026-10-20, not scheduled).** Full-wrap

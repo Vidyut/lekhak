@@ -52,7 +52,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter,
     QDateEdit, QDialog,
-    QDialogButtonBox,
+    QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFontComboBox, QFormLayout, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel,
     QLineEdit, QMenu,
@@ -71,7 +71,10 @@ from .importer import (
 )
 from .ywriter import import_yw7, parse_yw7
 from .scrivener import import_scriv, parse_scriv
-from .project import DEFAULT_LINK_POLICY, EXPORT_KINDS, Project
+from .project import (
+    DEFAULT_LINK_POLICY, DEFAULT_PAGE_SETUP, EXPORT_KINDS, PAGE_TRIMS,
+    Project, clean_page_setup, trim_id_for,
+)
 from .templates import (
     DOCUMENT_TEMPLATE_NAME_RE, EXTENSIONS, PLACEHOLDER_RE, SLOTS,
     TEMPLATE_COMPLETIONS,
@@ -708,6 +711,132 @@ class ExportOptionsDialog(QDialog):
         root = project_template_root(project.root)
         root.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
+
+
+class PageSetupDialog(QDialog):
+    """Print geometry for one book (1.15): trim size, margins, mirror
+    and gutter — the interior checklist every print-on-demand service
+    asks before it will print. Values are inches (POD specs are in
+    inches); export multiplies them into twips. Prefills the folder's
+    saved setup, else a sensible print default; nothing is stored
+    until the caller saves geometry(). Choosing a known trim fills the
+    size, and editing the size switches the trim to Custom — the same
+    two-way dance the other dialogs do, guarded by _loading."""
+
+    def __init__(self, geometry: dict | None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Page setup")
+        self.cleared = False
+        start = clean_page_setup(geometry) or dict(DEFAULT_PAGE_SETUP)
+        self._loading = True
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.trim_box = QComboBox()
+        for trim_id, (label, _width, _height) in PAGE_TRIMS.items():
+            self.trim_box.addItem(label, trim_id)
+        self.trim_box.addItem("Custom size", "custom")
+        self.width_spin = self._spin(3.0, 14.0, 2)
+        self.height_spin = self._spin(3.0, 14.0, 2)
+        self.top_spin = self._spin(0.0, 5.0, 3)
+        self.bottom_spin = self._spin(0.0, 5.0, 3)
+        self.inside_spin = self._spin(0.0, 5.0, 3)
+        self.outside_spin = self._spin(0.0, 5.0, 3)
+        self.gutter_spin = self._spin(0.0, 2.0, 3)
+        self.mirror_box = QCheckBox(
+            "Mirror margins (inside and outside swap on even pages)")
+        form.addRow("Trim size", self.trim_box)
+        form.addRow("Width", self.width_spin)
+        form.addRow("Height", self.height_spin)
+        form.addRow("Top margin", self.top_spin)
+        form.addRow("Bottom margin", self.bottom_spin)
+        form.addRow("Inside margin (spine)", self.inside_spin)
+        form.addRow("Outside margin", self.outside_spin)
+        form.addRow("Gutter (extra at spine)", self.gutter_spin)
+        form.addRow(self.mirror_box)
+        layout.addLayout(form)
+        self.hint = QLabel("")
+        layout.addWidget(self.hint)
+
+        reset = QPushButton("Use default (no override)")
+        reset.clicked.connect(self._use_default)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        bottom = QHBoxLayout()
+        bottom.addWidget(reset)
+        bottom.addStretch()
+        bottom.addWidget(buttons)
+        layout.addLayout(bottom)
+
+        self.width_spin.setValue(start["width"])
+        self.height_spin.setValue(start["height"])
+        self.top_spin.setValue(start["top"])
+        self.bottom_spin.setValue(start["bottom"])
+        self.inside_spin.setValue(start["inside"])
+        self.outside_spin.setValue(start["outside"])
+        self.gutter_spin.setValue(start["gutter"])
+        self.mirror_box.setChecked(start["mirror"])
+        index = self.trim_box.findData(start["trim"])
+        self.trim_box.setCurrentIndex(max(0, index))
+        self._loading = False
+        self.trim_box.currentIndexChanged.connect(self._trim_changed)
+        self.width_spin.valueChanged.connect(self._dims_changed)
+        self.height_spin.valueChanged.connect(self._dims_changed)
+
+    @staticmethod
+    def _spin(minimum: float, maximum: float, decimals: int) -> QDoubleSpinBox:
+        box = QDoubleSpinBox()
+        box.setRange(minimum, maximum)
+        box.setDecimals(decimals)
+        box.setSingleStep(0.0625)   # 1/16 in — the finest POD specs use
+        box.setSuffix(" in")
+        return box
+
+    def _trim_changed(self) -> None:
+        if self._loading:
+            return
+        trim_id = self.trim_box.currentData()
+        if trim_id == "custom":
+            return
+        _label, width, height = PAGE_TRIMS[trim_id]
+        self.width_spin.setValue(width)
+        self.height_spin.setValue(height)
+
+    def _dims_changed(self) -> None:
+        if self._loading:
+            return
+        desired = trim_id_for(self.width_spin.value(), self.height_spin.value())
+        if self.trim_box.currentData() != desired:
+            self.trim_box.setCurrentIndex(self.trim_box.findData(desired))
+
+    def geometry(self) -> dict:
+        return {
+            "trim": self.trim_box.currentData(),
+            "width": self.width_spin.value(),
+            "height": self.height_spin.value(),
+            "top": self.top_spin.value(),
+            "bottom": self.bottom_spin.value(),
+            "inside": self.inside_spin.value(),
+            "outside": self.outside_spin.value(),
+            "mirror": self.mirror_box.isChecked(),
+            "gutter": self.gutter_spin.value(),
+        }
+
+    def accept(self) -> None:
+        # The same clean_page_setup storage will run, so an entry this
+        # dialog accepts can never be rejected on the export side.
+        if clean_page_setup(self.geometry()) is None:
+            self.hint.setText(
+                "Those margins leave no text area: inside + outside + gutter "
+                "must be under the width, top + bottom under the height."
+            )
+            return
+        super().accept()
+
+    def _use_default(self) -> None:
+        self.cleared = True
+        super().accept()
 
 
 class ColumnPickerDialog(QDialog):
@@ -1887,6 +2016,10 @@ class MainWindow(QMainWindow):
         self.link_policy_box = QComboBox()
         self.link_policy_box.currentIndexChanged.connect(
             self._book_settings_changed)
+        # Print geometry (1.15): the button IS the summary — its text
+        # shows the current trim/margins, clicking opens the dialog.
+        self.page_setup_button = QPushButton("Page setup")
+        self.page_setup_button.clicked.connect(self._open_page_setup)
         self.doc_template_label = QLabel("Document template")
         self.doc_template_box = QComboBox()
         self.doc_template_box.currentIndexChanged.connect(
@@ -1916,6 +2049,7 @@ class MainWindow(QMainWindow):
         inspector_layout.addWidget(self.book_template_box)
         inspector_layout.addWidget(self.cover_label)
         inspector_layout.addLayout(cover_row)
+        inspector_layout.addWidget(self.page_setup_button)
         inspector_layout.addWidget(self.link_policy_label)
         inspector_layout.addWidget(self.link_policy_box)
         inspector_layout.addWidget(self.doc_template_label)
@@ -2117,6 +2251,7 @@ class MainWindow(QMainWindow):
         self.book_template_box.setEnabled(enabled)
         self.book_cover_edit.setEnabled(enabled)
         self.book_cover_button.setEnabled(enabled)
+        self.page_setup_button.setEnabled(enabled)
         self.link_policy_box.setEnabled(enabled)
         self.doc_template_box.setEnabled(enabled)
         self.metadata_table.setEnabled(enabled)
@@ -2619,6 +2754,7 @@ class MainWindow(QMainWindow):
             self.book_template_label, self.book_template_box,
             self.cover_label, self.book_cover_edit, self.book_cover_button,
             self.link_policy_label, self.link_policy_box,
+            self.page_setup_button,
         ):
             widget.setVisible(is_folder)
         self.doc_template_label.setVisible(is_prose)
@@ -2639,6 +2775,7 @@ class MainWindow(QMainWindow):
         self.templates_root_box.setChecked(document.is_templates_root)
         self.templates_root_box.blockSignals(False)
         self.book_cover_edit.setText(settings.get("cover", ""))
+        self.page_setup_button.setText(self._page_setup_text(document.id))
         self.link_policy_box.blockSignals(True)
         self.link_policy_box.clear()
         self.link_policy_box.addItem("Automatic (project default)", "")
@@ -2703,6 +2840,39 @@ class MainWindow(QMainWindow):
         if path:
             self.book_cover_edit.setText(path)
             self._book_settings_changed()
+
+    def _page_setup_text(self, document_id: str) -> str:
+        """The inspector button's label: what geometry this book prints
+        with, or that it has none."""
+        geometry = self.project.page_setup(document_id) if self.project else None
+        if not geometry:
+            return "Page setup — Default (US Letter)"
+        trim = geometry["trim"]
+        label = (PAGE_TRIMS[trim][0] if trim in PAGE_TRIMS
+                 else f'{geometry["width"]:g} × {geometry["height"]:g} in')
+        text = f"Page setup — {label}"
+        if geometry["mirror"]:
+            text += ", mirrored"
+        if geometry["gutter"]:
+            text += f", gutter {geometry['gutter']:g} in"
+        return text
+
+    def _open_page_setup(self) -> None:
+        if not self.project or not self.current_id:
+            return
+        document = self._current_document()
+        if not document or document.kind != "folder":
+            return
+        dialog = PageSetupDialog(
+            self.project.page_setup(self.current_id), self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self.project.set_page_setup(
+            self.current_id, None if dialog.cleared else dialog.geometry())
+        self.page_setup_button.setText(self._page_setup_text(self.current_id))
+        self.statusBar().showMessage(
+            "Page setup cleared — exports use the default (US Letter)"
+            if dialog.cleared else "Page setup saved", 3000)
 
     def _doc_template_changed(self, *_args) -> None:
         if self.loading or not self.project or not self.current_id:

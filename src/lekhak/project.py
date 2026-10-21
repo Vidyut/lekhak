@@ -67,6 +67,107 @@ EXPORT_KINDS = {"chapter", "scene"}
 # Auto-detected cover filenames under images/<folder_id>/ (2.1).
 COVER_SUFFIXES = ("jpg", "jpeg", "png", "webp", "gif")
 
+# Print geometry a book folder may carry (1.15): trim id ->
+# (label, width, height) in inches. The KDP/IngramSpark print-on-demand
+# list plus the international standards and the manuscript default;
+# anything else is entered as width/height directly ("custom").
+PAGE_TRIMS: dict[str, tuple[str, float, float]] = {
+    "letter": ("US Letter (8.5 × 11)", 8.5, 11.0),
+    "a4": ("A4 (8.27 × 11.69)", 8.27, 11.69),
+    "a5": ("A5 (5.83 × 8.27)", 5.83, 8.27),
+    "5x8": ("5 × 8", 5.0, 8.0),
+    "5.25x8": ("5.25 × 8", 5.25, 8.0),
+    "5.5x8.5": ("5.5 × 8.5", 5.5, 8.5),
+    "6x9": ("6 × 9", 6.0, 9.0),
+    "6.14x9.21": ("6.14 × 9.21 (KDP standard)", 6.14, 9.21),
+    "6.69x9.61": ("6.69 × 9.61", 6.69, 9.61),
+    "7x10": ("7 × 10", 7.0, 10.0),
+    "7.44x9.69": ("7.44 × 9.69", 7.44, 9.69),
+    "7.5x9.25": ("7.5 × 9.25", 7.5, 9.25),
+    "8x10": ("8 × 10", 8.0, 10.0),
+    "8.25x11": ("8.25 × 11", 8.25, 11.0),
+}
+
+DEFAULT_PAGE_SETUP: dict = {
+    "trim": "letter",
+    "width": 8.5, "height": 11.0,
+    "top": 0.5, "bottom": 0.5, "inside": 0.5, "outside": 0.5,
+    "mirror": True,
+    "gutter": 0.0,
+}
+
+
+def trim_id_for(width: float, height: float) -> str:
+    """The PAGE_TRIMS id matching these inches, or "custom"."""
+    for trim_id, (_label, trim_width, trim_height) in PAGE_TRIMS.items():
+        if abs(trim_width - width) < 0.005 and abs(trim_height - height) < 0.005:
+            return trim_id
+    return "custom"
+
+
+def clean_page_setup(row) -> dict | None:
+    """Validated print geometry in inches, or None when the row is
+    junk. Shared by storage, scope resolution and the dialog's accept
+    path, so "what the dialog allows" and "what export will use" can
+    never drift apart. Comparisons reject NaN/inf without a math import
+    (every bound is a chain of < comparisons, which NaN fails)."""
+    if not isinstance(row, dict):
+        return None
+    try:
+        width = float(row["width"])
+        height = float(row["height"])
+        top = float(row["top"])
+        bottom = float(row["bottom"])
+        inside = float(row["inside"])
+        outside = float(row["outside"])
+        gutter = float(row.get("gutter", 0.0))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (1.0 <= width <= 40.0 and 1.0 <= height <= 40.0):
+        return None
+    if not all(0.0 <= margin <= 40.0
+               for margin in (top, bottom, inside, outside, gutter)):
+        return None
+    if top + bottom >= height or inside + outside + gutter >= width:
+        return None
+    trim = str(row.get("trim", "custom"))
+    if trim != "custom" and trim not in PAGE_TRIMS:
+        trim = trim_id_for(width, height)
+    return {
+        "trim": trim,
+        "width": width, "height": height,
+        "top": top, "bottom": bottom,
+        "inside": inside, "outside": outside,
+        "mirror": row.get("mirror") is True,
+        "gutter": gutter,
+    }
+
+
+def _apply_page_geometry(document, geometry: dict) -> None:
+    """Put a book's print geometry (1.15) on every section of an open
+    python-docx document: trim in twips, inside margin on the left of
+    the recto (LTR books — page 1's left edge is the spine), gutter
+    beside it, and mirror margins in settings.xml when asked. All
+    sections are rewritten, so the ODD/EVEN_PAGE breaks of 1.6 can
+    never drift onto a different paper size."""
+    from docx.enum.section import WD_ORIENT
+    from docx.oxml import OxmlElement
+    from docx.shared import Inches
+
+    landscape = geometry["width"] > geometry["height"]
+    for section in document.sections:
+        section.page_width = Inches(geometry["width"])
+        section.page_height = Inches(geometry["height"])
+        section.top_margin = Inches(geometry["top"])
+        section.bottom_margin = Inches(geometry["bottom"])
+        section.left_margin = Inches(geometry["inside"])
+        section.right_margin = Inches(geometry["outside"])
+        section.gutter = Inches(geometry["gutter"])
+        if landscape:
+            section.orientation = WD_ORIENT.LANDSCAPE
+    if geometry["mirror"]:
+        document.settings.element.append(OxmlElement("w:mirrorMargins"))
+
 # Export-format word -> template-variant folder titles to try, in order
 # (2.1): a matched template's "ebook" subfolder applies to EPUB exports,
 # and the plain format word is the natural second guess.
@@ -1130,6 +1231,47 @@ class Project:
             json.dumps(stored, ensure_ascii=False, indent=1),
         )
 
+    def page_setup(self, document_id: str) -> dict | None:
+        """Print geometry for one book folder (1.15), or None — no
+        override, exports keep python-docx's Letter defaults.
+
+        A separate settings key from book_settings (not a row inside
+        it): set_book_settings replaces its whole row, and a template
+        tweak must not be able to wipe the print geometry. One JSON
+        dict keyed by folder id, same shape as project_metadata; junk
+        degrades to None through clean_page_setup."""
+        raw = self.get_setting("page_setup")
+        try:
+            stored = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(stored, dict):
+            return None
+        return clean_page_setup(stored.get(document_id))
+
+    def set_page_setup(self, document_id: str, values: dict | None) -> None:
+        """Replace one folder's print geometry; None removes the entry.
+        An invalid dict raises ValueError rather than silently storing
+        something export would then refuse to read."""
+        cleaned = clean_page_setup(values) if values is not None else None
+        if values is not None and cleaned is None:
+            raise ValueError(f"invalid page setup: {values!r}")
+        raw = self.get_setting("page_setup")
+        try:
+            stored = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            stored = {}
+        if not isinstance(stored, dict):
+            stored = {}
+        if cleaned is None:
+            stored.pop(document_id, None)
+        else:
+            stored[document_id] = cleaned
+        self.set_setting(
+            "page_setup",
+            json.dumps(stored, ensure_ascii=False, indent=1),
+        )
+
     def templates_roots(self) -> list[Document]:
         """Folders flagged as the special TEMPLATES area (2.1), in binder
         order — normally exactly one."""
@@ -1631,6 +1773,12 @@ class Project:
             settings = {}
         if not isinstance(settings, dict):
             settings = {}
+        try:
+            page_setup = json.loads(self.get_setting("page_setup"))
+        except (TypeError, ValueError):
+            page_setup = {}
+        if not isinstance(page_setup, dict):
+            page_setup = {}
         policy = self.get_setting("link_policy")
         return {
             "export_docs": export_docs,
@@ -1642,6 +1790,7 @@ class Project:
             "doc_unit": doc_unit,
             "titles": titles,
             "book_settings": settings,
+            "page_setup": page_setup,
             "global_policy": policy if policy in LINK_POLICIES
             else DEFAULT_LINK_POLICY,
         }
@@ -1658,6 +1807,26 @@ class Project:
                 return str(row["links"])
             current = scope["parent_map"].get(current)
         return scope["global_policy"]
+
+    def _page_setup_for_scope(self, scope: dict) -> dict | None:
+        """Print geometry in force for one export (1.15).
+
+        The nearest ancestor folder with a page setup, walking the
+        exported documents in binder order — same walk as _link_policy.
+        One file can carry only one paper size, so a multi-book export
+        takes the first book in scope that has one (recorded edge)."""
+        setups = scope["page_setup"]
+        if not isinstance(setups, dict):
+            return None
+        for document in scope["export_docs"]:
+            current = document.id
+            while current is not None:
+                if current in setups:
+                    cleaned = clean_page_setup(setups[current])
+                    if cleaned is not None:
+                        return cleaned
+                current = scope["parent_map"].get(current)
+        return None
 
     def _prepare_links(self, content: str, *, source_id: str | None,
                        scope: dict, fmt: str, html: bool) -> str:
@@ -1918,7 +2087,9 @@ class Project:
         """DOCX keeps structural headings (title as Heading 1/2) and plain
         body text; header/footer slots do not apply here. A Word TOC field
         (page numbers only) is inserted at the top; Word or LibreOffice
-        fills it in on field update."""
+        fills it in on field update. A book's page setup (1.15) stamps
+        trim/margins/mirror/gutter onto every section; with none set,
+        python-docx's Letter template stands — same as before 1.15."""
         from docx import Document as DocxDocument
         from docx.enum.section import WD_SECTION_START
         from docx.oxml import OxmlElement
@@ -1980,6 +2151,9 @@ class Project:
             for paragraph_text in self.plain_text(content).split("\n"):
                 if paragraph_text.strip():
                     self._docx_paragraph(output, paragraph_text.strip())
+        geometry = self._page_setup_for_scope(scope)
+        if geometry is not None:
+            _apply_page_geometry(output, geometry)
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}-", dir=destination.parent)
