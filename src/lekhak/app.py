@@ -67,6 +67,7 @@ from . import revisions
 from .importer import (
     dump_books, import_all_books, import_markdown_file, parse_dump,
 )
+from .ywriter import import_yw7, parse_yw7
 from .project import DEFAULT_LINK_POLICY, EXPORT_KINDS, Project
 from .templates import (
     DOCUMENT_TEMPLATE_NAME_RE, EXTENSIONS, PLACEHOLDER_RE, SLOTS,
@@ -1967,6 +1968,10 @@ class MainWindow(QMainWindow):
                      self.import_markdown_file)
         self._action(file_menu, "Import Markdown File into New Project…",
                      None, self.import_markdown_file_new_project)
+        self._action(file_menu, "Import yWriter Project…", None,
+                     self.import_ywriter)
+        self._action(file_menu, "Import yWriter Project into New Project…",
+                     None, self.import_ywriter_new_project)
         file_menu.addSeparator()
         self._action(file_menu, "Quit", QKeySequence.Quit, self.close)
 
@@ -3417,6 +3422,55 @@ class MainWindow(QMainWindow):
                                  str(error))
             return
         self.statusBar().showMessage(f"Imported into {title}", 5000)
+
+    def import_ywriter(self) -> None:
+        """Import a yWriter 7 project into the open project (2.3)."""
+        if not self.project:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import yWriter project", "", "yWriter 7 (*.yw7)")
+        if not path:
+            return
+        try:
+            self.save_current()
+            folder_id = import_yw7(self.project, Path(path))
+        except Exception as error:
+            QMessageBox.critical(self, "Import failed", str(error))
+            return
+        self._reload_tree(select_id=folder_id)
+        self.statusBar().showMessage(f"Imported {Path(path).name}", 5000)
+
+    def import_ywriter_new_project(self) -> None:
+        """Import a yWriter 7 project as a brand new project (2.3)."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import yWriter project", "", "yWriter 7 (*.yw7)")
+        if not path:
+            return
+        try:
+            parsed = parse_yw7(Path(path))
+        except Exception as error:
+            QMessageBox.critical(self, "Import failed", str(error))
+            return
+        title, accepted = QInputDialog.getText(
+            self, "Project title", "Title:",
+            text=parsed.title or Path(path).stem)
+        if not accepted or not title.strip():
+            return
+        selected = QFileDialog.getExistingDirectory(
+            self, "Choose location for the new project")
+        if not selected:
+            return
+        try:
+            project = Project.create(Path(selected) / title.strip(),
+                                     title.strip())
+            folder_id = import_yw7(project, Path(path), title=title.strip())
+            self._switch_project(project)
+            self._reload_tree(select_id=folder_id)
+        except Exception as error:
+            QMessageBox.critical(self, "Could not import project",
+                                 str(error))
+            return
+        self.statusBar().showMessage(f"Imported into {title.strip()}", 5000)
 
     def bold(self) -> None:
         fmt = QTextCharFormat()
