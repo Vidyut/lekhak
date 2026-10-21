@@ -769,6 +769,15 @@ language filter.
 ### 3.2 Everything else in the wish list
 Anything above that didn't earn a slot gets collected here as it arrives.
 
+**Instructions and GitHub release (captured 2026-10-20, not scheduled).**
+Author: "At some point, we should write instructions for it and release
+it onto github I guess." A README (what Lekhak is, install, first
+project, the export formats and what each is for), a short user guide
+for the menus the roadmap's features created, and a public repo push —
+decide license, repo name and what to do about the test fixtures that
+point at the author's corpus paths (the suite itself is portable; ad-hoc
+smokes reference `/home/vidyut/Writing` and must not leak).
+
 **Book cover generator (captured 2026-10-20, not scheduled).** Full-wrap
 cover from user-provided images: front, back, spine. The value is doing
 the parts writers get wrong and waste days on — spine width computed from
