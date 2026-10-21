@@ -57,12 +57,13 @@ from PySide6.QtWidgets import (
     QInputDialog, QLabel,
     QLineEdit, QMenu,
     QMainWindow, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
-    QPushButton, QSpinBox, QSplitter, QStatusBar, QStyle, QTabWidget,
+    QPushButton, QSlider, QSpinBox, QSplitter, QStatusBar, QStyle, QTabWidget,
     QTableWidget, QTableWidgetItem, QTextEdit, QToolBar, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import ai
+from . import tts
 from . import revisions
 from .importer import (
     dump_books, import_all_books, import_markdown_file, parse_dump,
@@ -257,6 +258,8 @@ class PreferencesDialog(QDialog):
                  link_policy: str | None = None,
                  revision_author: str = "Author",
                  ai_settings: "ai.AISettings | None" = None,
+                 tts_settings: "tts.TTSSettings | None" = None,
+                 tts_voices: list[str] | None = None,
                  parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Preferences")
@@ -343,12 +346,53 @@ class PreferencesDialog(QDialog):
         ai_note.setWordWrap(True)
         layout.addWidget(ai_note)
 
+        # Read aloud (3.1): voice and rate for Qt's QTextToSpeech.
+        # The engine connects when the dialog opens (the caller passes
+        # the names), so an empty list means this system has none.
+        active_tts = tts_settings or tts.load_settings()
+        layout.addWidget(QLabel("Read aloud voice:"))
+        tts_form = QFormLayout()
+        self.tts_voice_box = QComboBox()
+        for name in (tts_voices or []):
+            self.tts_voice_box.addItem(name)
+        if active_tts.voice:
+            index = self.tts_voice_box.findText(active_tts.voice)
+            if index >= 0:
+                self.tts_voice_box.setCurrentIndex(index)
+        tts_form.addRow("Voice:", self.tts_voice_box)
+        # QTextToSpeech rates run -1.0 .. 1.0; the slider holds
+        # hundredths so it stays a plain QSlider.
+        self.tts_rate_slider = QSlider(Qt.Horizontal)
+        self.tts_rate_slider.setRange(-100, 100)
+        self.tts_rate_slider.setValue(
+            round(max(-1.0, min(1.0, active_tts.rate)) * 100))
+        self.tts_rate_label = QLabel()
+        self._update_rate_label()
+        self.tts_rate_slider.valueChanged.connect(
+            self._update_rate_label)
+        rate_row = QHBoxLayout()
+        rate_row.addWidget(self.tts_rate_slider, 1)
+        rate_row.addWidget(self.tts_rate_label)
+        tts_form.addRow("Rate:", rate_row)
+        layout.addLayout(tts_form)
+        tts_note = QLabel(
+            "Used by Speak → Read Aloud: the selection, else the whole "
+            "scene. Left is slower, right is faster; ×1.00 is the "
+            "voice's normal pace."
+        )
+        tts_note.setWordWrap(True)
+        layout.addWidget(tts_note)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _update_rate_label(self) -> None:
+        self.tts_rate_label.setText(
+            f"×{1.0 + self.tts_rate_slider.value() / 100.0:.2f}")
 
 
 # Sentinel for "the project itself" in place of a document id — project
@@ -1733,6 +1777,11 @@ class MainWindow(QMainWindow):
         # leaving a cell mid-selection-change) still lands where it came
         # from instead of following current_id (1.12).
         self._metadata_target: str | None = None
+        # Read aloud (3.1): the engine connects on first use, not here —
+        # a speech-dispatcher handshake costs real time and most
+        # sessions never speak.
+        self._reader: tts.SpeechReader | None = None
+        self._speech_paused = False
         self.setWindowTitle("Lekhak")
         self.resize(1280, 820)
 
@@ -2031,6 +2080,14 @@ class MainWindow(QMainWindow):
         self._action(document_menu, "Create Snapshot…", None, self.create_snapshot)
         self._action(document_menu, "Restore Snapshot…", None, self.restore_snapshot)
         self._action(document_menu, "Link to Section…", "Ctrl+L", self._link_section)
+
+        # Read aloud (3.1): selection, else the whole scene, through
+        # Qt's QTextToSpeech; the voice and rate live in Preferences.
+        speak_menu = self.menuBar().addMenu("&Speak")
+        self._action(speak_menu, "Read Aloud", "F8", self.speak_aloud)
+        self._action(speak_menu, "Pause / Resume", "F9",
+                     self.toggle_speech_pause)
+        self._action(speak_menu, "Stop", None, self.stop_speech)
 
         # AI (2.4, layer 2): a thin menu over the OpenAI-compatible
         # client; output only ever lands via the tracked-changes path.
@@ -2476,6 +2533,7 @@ class MainWindow(QMainWindow):
     def _selection_changed(self, current, previous) -> None:
         if self.loading:
             return
+        self.stop_speech()
         self.save_current()
         self.current_id = current.data(0, Qt.UserRole) if current else None
         self.loading = True
@@ -2881,6 +2939,58 @@ class MainWindow(QMainWindow):
         self._content_changed()
         self.statusBar().showMessage(
             "Proofread text applied as a tracked change", 4000)
+
+    # --- read aloud (3.1) ----------------------------------------------------
+
+    def _speech(self) -> tts.SpeechReader | None:
+        """The window's engine, connecting it on first use."""
+        if self._reader is None:
+            self._reader = tts.SpeechReader(self)
+        return self._reader if self._reader.ensure_engine() else None
+
+    def speak_aloud(self) -> None:
+        """Read the selection, else the whole scene, aloud (3.1)."""
+        reader = self._speech()
+        if reader is None:
+            self.statusBar().showMessage(
+                "No text-to-speech engine on this system", 4000)
+            return
+        text = tts.speech_text(
+            self.editor.textCursor().selectedText()).strip()
+        if not text:
+            if not self.project or not self.current_id:
+                self.statusBar().showMessage(
+                    "Nothing to read — open a scene first", 4000)
+                return
+            text = self.project.plain_text(
+                self.editor.toHtml()).strip()
+            if not text:
+                self.statusBar().showMessage("This scene is empty", 3000)
+                return
+        self._speech_paused = False
+        reader.speak(text)
+        self.statusBar().showMessage("Reading aloud", 2000)
+
+    def toggle_speech_pause(self) -> None:
+        """F9: pause while speaking, resume while paused, nothing else."""
+        reader = self._speech()
+        if reader is None:
+            return
+        if self._speech_paused:
+            reader.resume()
+            self._speech_paused = False
+            self.statusBar().showMessage("Resumed", 1500)
+        else:
+            reader.pause()
+            self._speech_paused = True
+            self.statusBar().showMessage("Paused", 1500)
+
+    def stop_speech(self) -> None:
+        """Stop the engine; safe to call when nothing is connected —
+        document switches and window close run it unconditionally."""
+        if self._reader is not None:
+            self._reader.stop()
+        self._speech_paused = False
 
     def save_current(self) -> None:
         if not self.project or not self.current_id or self.loading:
@@ -3737,8 +3847,13 @@ class MainWindow(QMainWindow):
             self.project.get_setting("link_policy", DEFAULT_LINK_POLICY)
             if self.project else None
         )
+        # The voice list needs a connected engine; _speech caches one
+        # for the window, so this handshake is once per session.
+        reader = self._speech()
         dialog = PreferencesDialog(current, load_paste_prefs(), link_policy,
                                    revision_author(), ai.load_settings(),
+                                   tts.load_settings(),
+                                   reader.voice_names() if reader else [],
                                    parent=self)
         if dialog.exec() != QDialog.Accepted:
             return
@@ -3764,6 +3879,14 @@ class MainWindow(QMainWindow):
             model=dialog.ai_model_edit.text().strip(),
             key=dialog.ai_key_edit.text(),
         ))
+        tts.save_settings(tts.TTSSettings(
+            voice=dialog.tts_voice_box.currentText(),
+            rate=dialog.tts_rate_slider.value() / 100.0,
+        ))
+        # The live engine (if one is up) picks the change up at the
+        # next Read Aloud; apply it here too so a voice swap is instant.
+        if self._reader is not None:
+            self._reader.apply_settings()
         if self.project:
             self.project.set_setting(
                 "link_policy", dialog.link_policy_box.currentData())
@@ -3827,6 +3950,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(" · ".join(parts))
 
     def closeEvent(self, event) -> None:
+        self.stop_speech()
         self.save_current()
         if self.project:
             self.project.close()
