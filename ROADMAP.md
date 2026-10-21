@@ -202,17 +202,24 @@ compile into a scratch dir and converts it with the first LibreOffice
 on PATH that answers `--version` (deb/snap/tarball names both
 `libreoffice` and `soffice`; a found-but-broken candidate — the snap
 shim on this machine — is reported with its real stderr plus the install
-hint). Private LibreOffice profile, atomic `os.replace`, scratch
-cleaned in `finally`. Tests: 7 in `tests/test_pdf.py` against a stub
-converter (suite 343). **Open edges:** the live conversion is unsmoked
-until LibreOffice is installable here (the snap is dead on this host —
-classic confinement expecting host libicu74/libxml2.so.2, which the
-current distro no longer ships — and sudo is unavailable inside the
-sandbox, so a `sudo apt install libreoffice-writer` by the author is
-the fix); whether LibreOffice refreshes the DOCX TOC field (1.7's page
-numbers) during headless conversion is unverified; no page-size /
-mirror-margin presets behind the export (none exist for DOCX either —
-see1.6's scope note).
+hint). The first live run (author installed the deb, snap removed —
+LibreOffice 26.2.6.3) exposed the CLI's real limit: `--convert-to`
+never refreshes fields, so the TOC shipped as its cached placeholder
+text, and `w:dirty` on the field didn't move the headless loader
+either. Second commit (`0f4c2eb`) drives LibreOffice over a private
+socket through a standalone worker (`uno_pdf.py`, stdlib + uno only,
+run by whichever Python carries python3-uno — probed, because the
+app's venv cannot import it) that calls `index.update()` before
+`writer_pdf_Export`; two separate probe messages cover "no
+LibreOffice" and "no python3-uno". Private profile, atomic
+`os.replace`, scratch cleaned in `finally`. Live smoke: 34-page
+letter PDF in 0.9s, TOC with true page numbers (Scene 1.2 → 3,
+Chapter 2 → 7 …). Tests: 12 in `tests/test_pdf.py` against stubs
+(suite 348 — still no LibreOffice needed). **Open edges:** depends on
+`python3-uno` beside LibreOffice (probed; the error says the fix —
+`sudo apt install python3-uno`); no page-size / mirror-margin presets
+behind the export (none exist for DOCX either — see 1.6's scope
+note).
 **Implemented (2026-10-20):** `page_break` is a documents column (guarded
 migration, default `auto`) carried on `Document`, written through
 `update_document`, chosen in the inspector's "Page start" combo and saved
@@ -238,10 +245,13 @@ non-empty it is rendered as the first content page with `${Entries}` —
 one internal link per unit — on top of the spec-required nav document.
 DOCX: export inserts a real Word TOC field (`TOC \o "1-3" \z \u`, no
 `\h`, so it shows page numbers only), populated by Word or LibreOffice on
-field update. **PDF (2026-10-21):** export exists (1.6, LibreOffice
-wrapper) — TOC page numbers ride on LibreOffice refreshing the DOCX
-field during headless conversion, which is the next thing to verify in
-the live smoke; no link annotations yet.
+field update. **PDF (2026-10-21, verified in the `0f4c2eb` smoke):**
+page numbers land — `soffice --convert-to` alone left the placeholder
+in the PDF, so the UNO worker updates every document index explicitly
+before exporting; a 34-page smoke shows chapters and scenes in the
+contents with their real pages. Scene headings appear too (the field
+is `\o "1-3"` and scenes are Heading 2 — same as the DOCX contract).
+No link annotations yet.
 
 ### 1.9 Resume where you left off — DONE
 **Request:** "When the software is started, resume from where the cursor was
