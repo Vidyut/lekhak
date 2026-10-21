@@ -1956,6 +1956,8 @@ class MainWindow(QMainWindow):
         self._action(file_menu, "Export HTML…", None, lambda: self.export("html"))
         self._action(file_menu, "Export DOCX…", None, lambda: self.export("docx"))
         self._action(file_menu, "Export EPUB…", None, lambda: self.export("epub"))
+        self._action(file_menu, "Export Markdown…", None,
+                     lambda: self.export("markdown"))
         file_menu.addSeparator()
         self._action(file_menu, "Import Scrivener Dump…", None,
                      self.import_scrivener_dump)
@@ -3237,6 +3239,20 @@ class MainWindow(QMainWindow):
         # Raw scope from both trees (2.1): folders expand and book
         # chrome fires at compile time; None means the whole project.
         raw_ids = self._gather_export_selection()
+        # Clean markdown (2.3) is the inverse of the markdown import:
+        # no template chrome, so the template-set dialog is not shown.
+        if kind == "markdown":
+            selected, _ = QFileDialog.getSaveFileName(
+                self, "Export manuscript", "lekhak.md",
+                "Markdown (*.md);;All files (*)")
+            if selected:
+                try:
+                    self.project.export_markdown(Path(selected), raw_ids)
+                    self.statusBar().showMessage(
+                        f"Exported to {selected}", 5000)
+                except Exception as error:
+                    QMessageBox.critical(self, "Export failed", str(error))
+            return
         template_sets = discover_template_sets(self.project.root)
         current_set = self.project.get_setting("template_set", "default")
         options = ExportOptionsDialog(
@@ -3246,8 +3262,10 @@ class MainWindow(QMainWindow):
             return
         templates = options.selected_template_set()
         self.project.set_setting("template_set", templates.name)
-        suffix = {"text": ".txt", "html": ".html", "docx": ".docx", "epub": ".epub"}[kind]
-        selected, _ = QFileDialog.getSaveFileName(self, "Export manuscript", "lekhak" + suffix)
+        suffix = {"text": ".txt", "html": ".html", "docx": ".docx",
+                  "epub": ".epub"}[kind]
+        selected, _ = QFileDialog.getSaveFileName(
+            self, "Export manuscript", "lekhak" + suffix)
         if selected:
             try:
                 if kind == "text":

@@ -237,6 +237,34 @@ def _inline(text: str) -> str:
     return escaped
 
 
+def markdown_from_html(html: str) -> str:
+    """Inverse of markdown_to_html's subset (2.3): rich-text HTML back
+    to clean markdown prose.
+
+    Paragraphs become blank-line-separated blocks, ``<br>`` back to a
+    newline, ``<b>``/``<i>`` back to ``**``/``*``; every other tag is
+    dropped and the four usual entities unescaped. Accepts whatever Qt
+    stored — callers pass content through ``accepted_html`` first, so
+    tracking marks and style spans are already gone — and aims only at
+    the shapes this app's own converters put in. A literal ``*`` left
+    in prose can misparse on a later import; the writer polishes.
+    """
+    html = re.sub(r"<style\b[^>]*>.*?</style>", " ", html, flags=re.I | re.S)
+    html = re.sub(r"<br\s*/?>", "\n", html, flags=re.I)
+    html = re.sub(r"</p\s*>", "\n\n", html, flags=re.I)
+    html = re.sub(r"<(?:b|strong)>", "**", html, flags=re.I)
+    html = re.sub(r"</(?:b|strong)>", "**", html, flags=re.I)
+    html = re.sub(r"<(?:i|em)>", "*", html, flags=re.I)
+    html = re.sub(r"</(?:i|em)>", "*", html, flags=re.I)
+    html = re.sub(r"<[^>]+>", "", html)
+    html = (html.replace("&nbsp;", " ").replace("&amp;", "&")
+            .replace("&lt;", "<").replace("&gt;", ">"))
+    # Stored paragraphs are joined by a newline as well as a closing
+    # tag, which would otherwise leave three between blocks.
+    html = re.sub(r"\n{3,}", "\n\n", html)
+    return html.strip()
+
+
 def import_book(project: Project, raw_documents: list[RawDocument],
                 book_title: str, parent_id: str | None = None) -> str:
     """Create one book from a parsed dump; returns the book folder's id.

@@ -1838,6 +1838,53 @@ class Project:
         content = "\n".join(part for part in (header, body, footer) if part.strip())
         self._atomic_write(Path(destination), content.rstrip() + "\n")
 
+    def export_markdown(self, destination: Path,
+                        selected_ids: set[str] | None = None) -> None:
+        """Write the manuscript as clean markdown (2.3).
+
+        The round-trip counterpart of importer.markdown_from_html's
+        sibling import: no template chrome and no book-settings pages —
+        chapters as '# Title', scenes as '## Title', prose converted
+        back from the stored HTML with inline bold and italic kept — so
+        a file this writes imports back as the same structure. Wiki
+        links become plain words (the text-fallthrough of the 2.2 link
+        pass); resolved targets inside the export do not become real
+        markdown links, which have no notion of a sibling document.
+        """
+        # Local import: importer imports Project at module level.
+        from .importer import markdown_from_html
+
+        scope = self._compile_scope(selected_ids, "markdown")
+        chrome = scope["template_ids"]
+        ordered = [d for d in scope["ordered"] if d.id not in chrome]
+        scenes_of = {
+            chapter_id: [s for s in scenes if s.id not in chrome]
+            for chapter_id, scenes in scope["chapter_scenes"].items()
+        }
+
+        def body_of(document: Document) -> str:
+            content = self._prepare_links(
+                self.read_content(document.id), source_id=document.id,
+                scope=scope, fmt="markdown", html=False)
+            return markdown_from_html(content)
+
+        blocks: list[str] = []
+
+        def add(text: str) -> None:
+            text = text.strip()
+            if text:
+                blocks.append(text)
+
+        for document in ordered:
+            heading = "# " if document.kind == "chapter" else "## "
+            add(heading + document.title)
+            add(body_of(document))
+            for scene in scenes_of.get(document.id, []):
+                add("## " + scene.title)
+                add(body_of(scene))
+        content = "\n\n".join(blocks)
+        self._atomic_write(Path(destination), content.rstrip() + "\n")
+
     def export_html(self, destination: Path, selected_ids: set[str] | None = None,
                     templates: TemplateSet | None = None) -> None:
         """Write the compiled manuscript as a single HTML file."""
