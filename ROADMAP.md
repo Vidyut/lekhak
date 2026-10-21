@@ -572,7 +572,7 @@ as text ("dates changed to dates directly"). Whole-library import of the
 author's real dump: 3 books, 330 documents, 406k words in ~0.15s — the
 2.6MB file is not too big. File menu: "Import Scrivener Dump…" into the
 open project, and "…into New Project…" which creates a fresh `.lekhak`
-named after the dump file. Still open in this item: `.yw7`, `.scriv` XML, PDF.
+named after the dump file. Still open in this item: `.scriv` XML, PDF.
 **Design note for the Markdown import (author's idea, 2026-10-20):**
 "insert specific strings as dividers for the splitter — [this string]
 begins a chapter, [that string] begins a scene." The importer should
@@ -613,6 +613,25 @@ words, not real markdown links; a standalone top-level scene exports as
 `##`, which on re-import parents under the preceding chapter rather
 than back at book level; book-settings numbers/chrome are absent by
 design — clean markdown is prose and structure only.
+**yWriter 7 import implemented (2026-10-20):** one commit (`53c5076`).
+File → "Import yWriter Project…" / "…into New Project…": the `.yw7`
+single-XML format (root `YWRITER7`, scene prose inline in
+`SceneContent`) parsed with no dependency, chapter order from the
+`CHAPTERS` list and scene order from each chapter's `ScID` references;
+Notes/ToDo/unused chapters and scenes skipped the way yWriter's own
+compile skips them; empty normal chapters kept as structure; scene
+`Desc` becomes the synopsis; utf-8 tried first, utf-16 (yWriter for
+iOS) as fallback. Scene HTML is stored as written — Qt reads that
+dialect directly. Tests: `tests/test_ywriter_import.py` (10), suite
+311.
+**Open edges (yWriter import):** no real `.yw7` from the author's
+library was available to smoke-test against — the format is verified
+against PyWriter's reference reader and synthetic fixtures, so a
+file that trips the parser will show up as a failed import with the
+XML error quoted; part-level chapters (`SectionStart`) import flat as
+chapters rather than as folders; character/location/item reference
+data and chapter Descs are not imported; yWriter 5 side-car RTF files
+are not read (6+ inline content only).
 
 ### 2.4 Tracked edits with accept/reject, and AI as a source of them — DONE
 **Request:** "eventually, AI integration and tracked edits to
