@@ -572,8 +572,7 @@ as text ("dates changed to dates directly"). Whole-library import of the
 author's real dump: 3 books, 330 documents, 406k words in ~0.15s — the
 2.6MB file is not too big. File menu: "Import Scrivener Dump…" into the
 open project, and "…into New Project…" which creates a fresh `.lekhak`
-named after the dump file. Still open in this item: `.yw7`, `.scriv` XML,
-clean Markdown export, PDF.
+named after the dump file. Still open in this item: `.yw7`, `.scriv` XML, PDF.
 **Design note for the Markdown import (author's idea, 2026-10-20):**
 "insert specific strings as dividers for the splitter — [this string]
 begins a chapter, [that string] begins a scene." The importer should
@@ -599,6 +598,21 @@ title, so `[[Book]]` resolves to the folder (first in binder order) —
 harmless, but a deliberate link to the opening scene needs another
 title; setext headings (`Title` over `===`) are not dividers; no
 front-matter/synopsis extraction — a file is prose and structure only.
+**Markdown export implemented (2026-10-20):** one commit (`b8ec0a4`).
+File → "Export Markdown…": clean structure only — `#` chapter / `##`
+scene headings, prose converted back from stored HTML with bold and
+italic kept (`markdown_from_html` mirrors `markdown_to_html`'s subset),
+wiki links as plain words via the 2.2 text fallthrough. No template
+chrome, no book-settings pages, no template-set dialog — the inverse of
+the import, deliberately not a fifth chrome-aware format. Full-corpus
+smoke: the author's dump exports to 2.4M chars in 0.04s and re-imports
+in 0.08s with 46 chapters / 280 scenes intact. Tests:
+`tests/test_markdown_export.py` (8), suite 301.
+**Open edges (markdown export):** resolved `[[links]]` become plain
+words, not real markdown links; a standalone top-level scene exports as
+`##`, which on re-import parents under the preceding chapter rather
+than back at book level; book-settings numbers/chrome are absent by
+design — clean markdown is prose and structure only.
 
 ### 2.4 Tracked edits with accept/reject, and AI as a source of them — DONE
 **Request:** "eventually, AI integration and tracked edits to
