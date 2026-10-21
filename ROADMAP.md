@@ -235,7 +235,7 @@ in the repo; capture separately if wanted. Tests: 2 project-level (parity
 counts in the DOCX XML, persistence + rejection) and 4 offscreen GUI tests
 in `tests/test_app_pagebreak.py`.
 
-### 1.7 Table of contents — DONE (PDF part waits on the PDF writer)
+### 1.7 Table of contents — DONE
 **Request:** TOC with links for ebook, links and/or page numbers for PDF,
 page numbers only for DOCX.
 
@@ -251,7 +251,13 @@ in the PDF, so the UNO worker updates every document index explicitly
 before exporting; a 34-page smoke shows chapters and scenes in the
 contents with their real pages. Scene headings appear too (the field
 is `\o "1-3"` and scenes are Heading 2 — same as the DOCX contract).
-No link annotations yet.
+**Links (2026-10-21):** LibreOffice emits the annotations itself —
+every contents entry becomes a `/Link` annot with a direct page
+destination, byte-identical with and without `\h` on the field, so the
+DOCX contract (page numbers only) stands and the PDF gets clickable
+entries anyway. End-to-end smoke through `pdf.export_pdf`: nine entries,
+printed numbers equal to link targets, each heading present on its
+target page.
 
 ### 1.9 Resume where you left off — DONE
 **Request:** "When the software is started, resume from where the cursor was
@@ -462,7 +468,7 @@ verified live.
 
 ## Phase 2 — books, variants, and conditional content
 
-### 2.1 Book-level compile settings
+### 2.1 Book-level compile settings — DONE
 **Request:** "if book is MH/TI/PF, front/back matter is this, that or the
 other — set on the book folder level; if an image is present in the folder it
 is the book image."
@@ -529,7 +535,7 @@ whole-project export needs an explicit deselect (the scope summary makes
 this visible); a stored template/slot id that no longer exists shows as
 Automatic/Default and heals on the next actual change.
 
-### 2.2 Conditional content and link stripping
+### 2.2 Conditional content and link stripping — DONE
 **Request:** "only internal links to documents getting published should be
 available to publish; all other internal links stripped."
 **Model:** resolved at compile time, not at write time — the editor keeps
