@@ -1272,6 +1272,30 @@ class Project:
             json.dumps(stored, ensure_ascii=False, indent=1),
         )
 
+    def effective_page_setup(self, document_id: str) -> dict | None:
+        """Print geometry in force for one document (1.15/3.2): the
+        nearest ancestor folder's stored setup — the same walk export
+        uses, so the Page view renders exactly what export prints.
+        None means no override anywhere; callers fall back to the
+        default Letter box, as export does."""
+        raw = self.get_setting("page_setup")
+        try:
+            stored = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(stored, dict):
+            return None
+        parents = {document.id: document.parent_id
+                   for document in self.documents()}
+        current: str | None = document_id
+        while current is not None:
+            if current in stored:
+                cleaned = clean_page_setup(stored[current])
+                if cleaned is not None:
+                    return cleaned
+            current = parents.get(current)
+        return None
+
     def templates_roots(self) -> list[Document]:
         """Folders flagged as the special TEMPLATES area (2.1), in binder
         order — normally exactly one."""

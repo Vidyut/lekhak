@@ -844,17 +844,41 @@ decide license, repo name and what to do about the test fixtures that
 point at the author's corpus paths (the suite itself is portable; ad-hoc
 smokes reference `/home/vidyut/Writing` and must not leak).
 
-**Page view — realistic paged canvas (captured 2026-10-21, not
-scheduled).** Author, deferring deliberately: "we should also be able to
-offer a 'page view' so the writer knows what goes on the page and where
-— this will be needed for books with illustrations. But since I don't do
-them (yet), there is no hurry." A Writer/Word-style layout mode showing
-real pages — the book folder's page size, font size and margins
-rendered as they will print, so placement of illustrations and
-breaks is visible while writing. Depends on 1.15 (page setup data must
-exist per book before anything can render it — shipped 2026-10-21);
-editor side needs QTextDocument paged view (page size via QTextDocument's paper size +
-paint margins) — investigate when scheduled.
+**Page view — realistic paged canvas — DONE**
+**Request:** "we should also be able to offer a 'page view' so the
+writer knows what goes on the page and where — this will be needed for
+books with illustrations. But since I don't do them (yet), there is no
+hurry." (Captured 2026-10-21, scheduled the same day once 1.15 shipped.)
+**Model:** the investigation the capture called for settled the
+architecture by failing: QTextEdit cannot paginate live — with word
+wrap on, every relayout re-stamps the document's pageSize to the
+viewport, and with NoWrap nothing wraps (both measured, not guessed).
+So the view is a projection: the Page tab owns its own QTextDocument,
+built from the editor's live HTML and laid out at the book's
+text-column size, painted sheet by sheet — pasteboard, paper, shadow,
+text-box outline, page number — with layout coordinates page-stacked at
+exactly the column height (verified against QTextDocumentLayout).
+Geometry comes from a new `Project.effective_page_setup` — the export
+walk, nearest book ancestor, junk rows skipped — so the preview and
+the printed file can never disagree; no setup anywhere means the same
+default Letter box export uses. Mirrored books alternate recto/verso
+per sheet with the gutter on the inside; fit-to-window scaling runs
+0.15–1.0×. Dblclick on the paper jumps to the editor at the same
+character offset (both sides share one HTML source, so offsets map).
+**Implemented (2026-10-21):** `src/lekhak/pageview.py` (pure geometry
+helpers, `PageCanvas`, `PageScrollArea`, `PageView`), the Project
+helper, and the second tab between Editor and Corkboard — refresh on
+tab show and selection change, status line reporting pages and trim.
+Tests `tests/test_pageview.py` (18), suite 394. Live visual smoke:
+rendered sheets inspected — margins, styles, page numbers all correct.
+**Open edges:** the projection is read-only — typing happens in the
+editor (dblclick goes there); fonts are the editor's, not the export
+template's, so the preview's page count can differ from the PDF's until
+template typography is parsed for preview; a document is assumed to
+start recto (page 1 = right-hand sheet) — parity across a multi-scene
+book isn't modeled; template header/footer slots and 1.6 page-start
+markers don't shift the sheets; zoom is fit-only (no manual control);
+no word/page estimates yet (the status line counts sheets).
 
 **Book cover generator (captured 2026-10-20, not scheduled).** Full-wrap
 cover from user-provided images: front, back, spine. The value is doing

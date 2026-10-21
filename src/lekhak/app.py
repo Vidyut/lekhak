@@ -75,6 +75,7 @@ from .project import (
     DEFAULT_LINK_POLICY, DEFAULT_PAGE_SETUP, EXPORT_KINDS, PAGE_TRIMS,
     Project, clean_page_setup, trim_id_for,
 )
+from .pageview import PageView
 from .templates import (
     DOCUMENT_TEMPLATE_NAME_RE, EXTENSIONS, PLACEHOLDER_RE, SLOTS,
     TEMPLATE_COMPLETIONS,
@@ -1960,9 +1961,16 @@ class MainWindow(QMainWindow):
         self.views.addTab(self.editor, "Editor")
         self.views.addTab(self.corkboard, "Corkboard")
         self.views.addTab(self.outliner, "Outliner")
+        # Page view (3.2): the projection canvas, second tab — it sits
+        # next to the editor because it is the same document seen as
+        # printed paper.
+        self.page_view = PageView()
+        self.page_view.jump_requested.connect(self._page_jump)
+        self.views.insertTab(1, self.page_view, "Page")
         self.views.currentChanged.connect(lambda _index: self._refresh_corkboard())
         self.views.currentChanged.connect(
             lambda index: self._refresh_outliner() if self.views.widget(index) is self.outliner else None)
+        self.views.currentChanged.connect(self._page_view_tab_changed)
 
         self.synopsis = QPlainTextEdit()
         self.synopsis.setPlaceholderText("Synopsis…")
@@ -2244,6 +2252,7 @@ class MainWindow(QMainWindow):
     def _set_project_enabled(self, enabled: bool) -> None:
         self.tree.setEnabled(enabled)
         self.editor.setEnabled(enabled)
+        self.page_view.setEnabled(enabled)
         self.corkboard.setEnabled(enabled)
         self.synopsis.setEnabled(enabled)
         self.page_break_box.setEnabled(enabled)
@@ -2698,6 +2707,7 @@ class MainWindow(QMainWindow):
             self._refresh_book_widgets(None)
         self._populate_metadata_table()
         self._refresh_related()
+        self._refresh_page_preview()
         self.loading = False
         self._update_word_count()
         self._refresh_corkboard()
@@ -2841,16 +2851,24 @@ class MainWindow(QMainWindow):
             self.book_cover_edit.setText(path)
             self._book_settings_changed()
 
+    @staticmethod
+    def _trim_label(geometry) -> str:
+        """Human trim name for status lines and button labels: the
+        preset's own label, or the raw inches for a custom size."""
+        if not geometry:
+            return "Default (US Letter)"
+        trim = geometry["trim"]
+        if trim in PAGE_TRIMS:
+            return PAGE_TRIMS[trim][0]
+        return f'{geometry["width"]:g} × {geometry["height"]:g} in'
+
     def _page_setup_text(self, document_id: str) -> str:
         """The inspector button's label: what geometry this book prints
         with, or that it has none."""
         geometry = self.project.page_setup(document_id) if self.project else None
         if not geometry:
             return "Page setup — Default (US Letter)"
-        trim = geometry["trim"]
-        label = (PAGE_TRIMS[trim][0] if trim in PAGE_TRIMS
-                 else f'{geometry["width"]:g} × {geometry["height"]:g} in')
-        text = f"Page setup — {label}"
+        text = f"Page setup — {self._trim_label(geometry)}"
         if geometry["mirror"]:
             text += ", mirrored"
         if geometry["gutter"]:
@@ -2873,6 +2891,46 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "Page setup cleared — exports use the default (US Letter)"
             if dialog.cleared else "Page setup saved", 3000)
+
+    def _page_view_tab_changed(self, index: int) -> None:
+        if self.views.widget(index) is self.page_view:
+            self._refresh_page_preview()
+
+    def _refresh_page_preview(self) -> None:
+        """Project the current document onto real pages (3.2).
+
+        Only runs while the Page tab is showing — a refresh rebuilds a
+        whole QTextDocument, and while the tab shows nothing can change
+        underneath (the canvas is read-only), so tab switches are the
+        refresh trigger. Geometry is the nearest book's setup — the
+        export's own walk — and the HTML comes from the live editor
+        document, so unsaved edits appear."""
+        if self.views.currentWidget() is not self.page_view:
+            return
+        if not self.project or not self.current_id:
+            self.page_view.set_page("", None, None)
+            return
+        geometry = self.project.effective_page_setup(self.current_id)
+        self.page_view.set_page(
+            self.editor.document().toHtml(),
+            geometry,
+            self.editor.font(),
+        )
+        count = self.page_view.page_count
+        self.statusBar().showMessage(
+            f"Page view — {count} page{'' if count == 1 else 's'}, "
+            f"{self._trim_label(geometry)}")
+
+    def _page_jump(self, position: int) -> None:
+        """Dblclick on the paper: show the editor at the same
+        character — both documents share one HTML source, so the
+        offset maps."""
+        self.views.setCurrentWidget(self.editor)
+        cursor = QTextCursor(self.editor.document())
+        cursor.setPosition(min(position, self.editor.document().characterCount() - 1))
+        self.editor.setTextCursor(cursor)
+        self.editor.ensureCursorVisible()
+        self.editor.setFocus()
 
     def _doc_template_changed(self, *_args) -> None:
         if self.loading or not self.project or not self.current_id:
