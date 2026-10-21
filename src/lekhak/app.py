@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import ai
+from . import pdf
 from . import tts
 from . import revisions
 from .importer import (
@@ -2006,6 +2007,7 @@ class MainWindow(QMainWindow):
         self._action(file_menu, "Export Plain Text…", None, lambda: self.export("text"))
         self._action(file_menu, "Export HTML…", None, lambda: self.export("html"))
         self._action(file_menu, "Export DOCX…", None, lambda: self.export("docx"))
+        self._action(file_menu, "Export PDF…", None, lambda: self.export("pdf"))
         self._action(file_menu, "Export EPUB…", None, lambda: self.export("epub"))
         self._action(file_menu, "Export Markdown…", None,
                      lambda: self.export("markdown"))
@@ -3383,7 +3385,7 @@ class MainWindow(QMainWindow):
         templates = options.selected_template_set()
         self.project.set_setting("template_set", templates.name)
         suffix = {"text": ".txt", "html": ".html", "docx": ".docx",
-                  "epub": ".epub"}[kind]
+                  "epub": ".epub", "pdf": ".pdf"}[kind]
         selected, _ = QFileDialog.getSaveFileName(
             self, "Export manuscript", "lekhak" + suffix)
         if selected:
@@ -3394,6 +3396,10 @@ class MainWindow(QMainWindow):
                     self.project.export_html(Path(selected), raw_ids, templates)
                 elif kind == "docx":
                     self.project.export_docx(Path(selected), raw_ids, templates)
+                elif kind == "pdf":
+                    # Same DOCX, converted by LibreOffice (1.6's route).
+                    pdf.export_pdf(self.project, Path(selected), raw_ids,
+                                   templates)
                 else:
                     self.project.export_epub(Path(selected), raw_ids, templates)
                 self.statusBar().showMessage(f"Exported to {selected}", 5000)
