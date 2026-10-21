@@ -64,7 +64,9 @@ from PySide6.QtWidgets import (
 
 from . import ai
 from . import revisions
-from .importer import dump_books, import_all_books, parse_dump
+from .importer import (
+    dump_books, import_all_books, import_markdown_file, parse_dump,
+)
 from .project import DEFAULT_LINK_POLICY, EXPORT_KINDS, Project
 from .templates import (
     DOCUMENT_TEMPLATE_NAME_RE, EXTENSIONS, PLACEHOLDER_RE, SLOTS,
@@ -934,6 +936,76 @@ class TemplateSlotEditorDialog(QDialog):
         template_set.directory.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(
             str(template_set.directory)))
+
+
+class ImportMarkdownDialog(QDialog):
+    """Pick a plain markdown file and the writer's own divider strings
+    (2.3).
+
+    No heading convention is imposed — the defaults are '#' for a
+    chapter and '##' for a scene, exactly the author's proposal — and
+    either divider may be emptied to stop that level existing.
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Import Markdown File")
+        self.resize(520, 220)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        file_row = QHBoxLayout()
+        self.path_edit = QLineEdit()
+        self.path_edit.textChanged.connect(self._path_changed)
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._browse)
+        file_row.addWidget(self.path_edit, 1)
+        file_row.addWidget(browse)
+        form.addRow("File:", file_row)
+        self.title_edit = QLineEdit()
+        form.addRow("Book title:", self.title_edit)
+        self.chapter_edit = QLineEdit("#")
+        form.addRow("Chapter divider:", self.chapter_edit)
+        self.scene_edit = QLineEdit("##")
+        form.addRow("Scene divider:", self.scene_edit)
+        layout.addLayout(form)
+        note = QLabel(
+            "A line starting with a divider begins a new document; the "
+            "rest of the line is its title. Prose before the first "
+            "divider becomes the book's opening scene."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _browse(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Markdown file", "",
+            "Markdown (*.md *.markdown *.txt);;All files (*)")
+        if path:
+            self.path_edit.setText(path)
+
+    def _path_changed(self, text: str) -> None:
+        # Default the book title to the file stem until the writer
+        # overrides it; keep an override they already typed.
+        if text and (not self.title_edit.text()
+                     or self.title_edit.text() == Path(text).stem):
+            self.title_edit.setText(Path(text).stem)
+
+    def chosen_path(self) -> Path | None:
+        text = self.path_edit.text().strip()
+        candidate = Path(text) if text else None
+        return candidate if candidate and candidate.is_file() else None
+
+    def accept(self) -> None:
+        if self.chosen_path() is None:
+            QMessageBox.warning(
+                self, "Import", "Choose an existing markdown file first.")
+            return
+        super().accept()
 
 
 class RevisionPassesDialog(QDialog):
@@ -1889,6 +1961,10 @@ class MainWindow(QMainWindow):
                      self.import_scrivener_dump)
         self._action(file_menu, "Import Scrivener Dump into New Project…", None,
                      self.import_scrivener_dump_new_project)
+        self._action(file_menu, "Import Markdown File…", None,
+                     self.import_markdown_file)
+        self._action(file_menu, "Import Markdown File into New Project…",
+                     None, self.import_markdown_file_new_project)
         file_menu.addSeparator()
         self._action(file_menu, "Quit", QKeySequence.Quit, self.close)
 
@@ -3271,6 +3347,58 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Imported {len(books)} books into {title.strip()}", 5000
         )
+
+    def import_markdown_file(self) -> None:
+        """Import one plain markdown file into the open project (2.3).
+
+        The writer names the divider strings in the dialog — no heading
+        convention is imposed — and the file becomes one book folder
+        split the way they asked."""
+        if not self.project:
+            return
+        dialog = ImportMarkdownDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        path = dialog.chosen_path()
+        try:
+            self.save_current()
+            folder_id = import_markdown_file(
+                self.project, path,
+                book_title=dialog.title_edit.text(),
+                chapter_divider=dialog.chapter_edit.text(),
+                scene_divider=dialog.scene_edit.text(),
+            )
+        except Exception as error:
+            QMessageBox.critical(self, "Import failed", str(error))
+            return
+        self._reload_tree(select_id=folder_id)
+        self.statusBar().showMessage(f"Imported {Path(path).name}", 5000)
+
+    def import_markdown_file_new_project(self) -> None:
+        """Import one plain markdown file as a brand new project (2.3)."""
+        dialog = ImportMarkdownDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        path = dialog.chosen_path()
+        title = dialog.title_edit.text().strip() or path.stem
+        selected = QFileDialog.getExistingDirectory(
+            self, "Choose location for the new project")
+        if not selected:
+            return
+        try:
+            project = Project.create(Path(selected) / title, title)
+            folder_id = import_markdown_file(
+                project, path, book_title=title,
+                chapter_divider=dialog.chapter_edit.text(),
+                scene_divider=dialog.scene_edit.text(),
+            )
+            self._switch_project(project)
+            self._reload_tree(select_id=folder_id)
+        except Exception as error:
+            QMessageBox.critical(self, "Could not import project",
+                                 str(error))
+            return
+        self.statusBar().showMessage(f"Imported into {title}", 5000)
 
     def bold(self) -> None:
         fmt = QTextCharFormat()

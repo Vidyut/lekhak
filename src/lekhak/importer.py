@@ -309,3 +309,99 @@ def import_all_books(project: Project, raw_documents: list[RawDocument]
         import_book(project, raw_documents, book, wrapper_id)
         for book in books
     ]
+
+
+# --- plain markdown import (2.3) ---------------------------------------------
+# The author's own proposal: the writer names the divider strings in the
+# import dialog — no heading convention is imposed — and the file splits
+# on them, pandoc-free, everything between dividers becoming prose.
+
+
+@dataclass
+class MarkdownSplit:
+    """One document's worth of a split markdown file."""
+
+    kind: str                       # "chapter" | "scene"
+    title: str
+    body: str
+
+
+def _divider_kind(line: str, chapter_divider: str,
+                  scene_divider: str) -> tuple[str | None, str]:
+    """Does this line open a new document? Returns (kind, title).
+
+    The scene divider is tested first so the more specific string wins
+    when both would match (the '#' / '##' defaults). A divider must sit
+    at the start of a stripped line and be followed by end-of-line or
+    whitespace, so '##nope' is prose rather than a scene called 'nope'.
+    """
+    stripped = line.strip()
+    for kind, divider in (("scene", scene_divider),
+                          ("chapter", chapter_divider)):
+        if not divider or not stripped.startswith(divider):
+            continue
+        rest = stripped[len(divider):]
+        if rest and not rest[0].isspace():
+            continue
+        return kind, rest.strip()
+    return None, ""
+
+
+def split_markdown(text: str, *, chapter_divider: str = "#",
+                   scene_divider: str = "##",
+                   opening_title: str = "Opening") -> list[MarkdownSplit]:
+    """Split a plain markdown file on the writer's own divider strings.
+
+    Prose before the first divider becomes a scene of its own (titled by
+    the caller — the import names it after the book), so nothing is
+    silently dropped when a file opens with a paragraph instead of a
+    heading. Blank lines inside a body survive, ready for
+    markdown_to_html's paragraph split.
+    """
+    chunks: list[MarkdownSplit] = []
+    kind: str | None = None
+    title = opening_title
+    body: list[str] = []
+    for line in text.splitlines():
+        found_kind, found_title = _divider_kind(
+            line, chapter_divider, scene_divider)
+        if found_kind:
+            if kind is not None:
+                chunks.append(MarkdownSplit(kind, title, "\n".join(body)))
+            kind, title, body = found_kind, found_title or "Untitled", []
+        elif kind is not None:
+            body.append(line)
+        else:
+            kind, title, body = "scene", opening_title, [line]
+    if kind is not None:
+        chunks.append(MarkdownSplit(kind, title, "\n".join(body)))
+    return chunks
+
+
+def import_markdown_file(project: Project, path: Path, *,
+                         book_title: str = "", chapter_divider: str = "#",
+                         scene_divider: str = "##") -> str:
+    """Import one plain markdown file as a book; returns the folder id.
+
+    The file becomes a folder named after itself (or the caller's
+    title); chapter dividers become chapters, scene dividers become
+    scenes under the current chapter — or directly under the book when
+    none has started. Bodies go through the same minimal markdown
+    conversion the dump import uses.
+    """
+    path = Path(path)
+    title = book_title.strip() or path.stem
+    text = path.read_text(encoding="utf-8")
+    chunks = split_markdown(text, chapter_divider=chapter_divider,
+                            scene_divider=scene_divider,
+                            opening_title=title)
+    folder = project.add_document(title, None, "folder")
+    chapter_id: str | None = None
+    for chunk in chunks:
+        kind = chunk.kind if chunk.kind in ("chapter", "scene") else "scene"
+        document = project.add_document(chunk.title, chapter_id or folder.id,
+                                        kind)
+        if kind == "chapter":
+            chapter_id = document.id
+        project.write_content(document.id, markdown_to_html(chunk.body))
+    return folder.id
