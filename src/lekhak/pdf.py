@@ -2,15 +2,20 @@
 
 The DOCX stays the exact artifact and the single renderer: instead of
 growing a second layout engine inside Lekhak, this module hands the
-compiled DOCX to whatever LibreOffice the writer already has (deb, snap
-or tarball) and moves the result into place atomically. Nothing here
-parses or understands PDF — we shell out, and when the converter is
-missing or broken the message says how to fix it.
+compiled DOCX to the writer's own LibreOffice and moves the result into
+place atomically. The handoff goes through LibreOffice's UNO API (a
+worker subprocess in ``uno_pdf.py``) rather than a bare
+``--convert-to``: the CLI loader never refreshes fields, so the 1.7 TOC
+would ship as its cached placeholder, while a UNO ``index.update()``
+puts real page numbers in the contents page. Nothing here parses or
+understands PDF — we shell out, and when the converter or its scripting
+bindings are missing the message says how to fix each.
 """
 
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -19,13 +24,18 @@ from .project import Project
 # Candidate commands, in order: the deb/snap/tarball all install one of
 # these names on PATH.
 CANDIDATES = ("libreoffice", "soffice")
-PROBE_TIMEOUT = 10       # --version is instant on a healthy install
-CONVERT_TIMEOUT = 300    # a full manuscript can take a while
+# Interpreters probed for the `uno` module: the app's own interpreter
+# first (venvs created with system site-packages carry it), then the
+# system python3 that LibreOffice's bindings were installed for.
+UNO_CANDIDATES = (sys.executable, "python3")
+PROBE_TIMEOUT = 10        # --version / import uno are both quick
+CONVERT_TIMEOUT = 300     # a full manuscript can take a while
+UNO_SCRIPT = Path(__file__).with_name("uno_pdf.py")
 
-# Why the last find_converter() run came up empty, one line per failed
-# candidate; folded into the error message so "broken install" and
-# "not installed" read differently.
-_probe_errors: list[str] = []
+# Why the last probes came up empty, kept apart so a converter message
+# never mixes in interpreter detail (and vice versa).
+_converter_errors: list[str] = []
+_uno_errors: list[str] = []
 
 
 class ConversionError(RuntimeError):
@@ -36,13 +46,13 @@ class ConversionError(RuntimeError):
 def find_converter() -> list[str] | None:
     """The first LibreOffice on PATH that actually runs.
 
-    ``which`` alone lies here: a broken snap shim sits on PATH on the
-    author's machine and dies before doing any work, so every candidate
+    ``which`` alone lies here: a broken snap shim sat on PATH on the
+    author's machine and died before doing any work, so every candidate
     is asked to speak first. PATH is stable within a session, but the
     probe is one ``--version`` per export — re-probing beats caching a
     miss made before the writer installed anything.
     """
-    _probe_errors.clear()
+    _converter_errors.clear()
     for name in CANDIDATES:
         path = shutil.which(name)
         if not path:
@@ -53,23 +63,73 @@ def find_converter() -> list[str] | None:
                 timeout=PROBE_TIMEOUT,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
-            _probe_errors.append(f"{name}: {error}")
+            _converter_errors.append(f"{name}: {error}")
             continue
         if result.returncode == 0:
             return [path]
         detail = (result.stderr or result.stdout).strip()
-        _probe_errors.append(f"{name}: {detail[:300] or 'exit ' + str(result.returncode)}")
+        _converter_errors.append(
+            f"{name}: {detail[:300] or 'exit ' + str(result.returncode)}")
     return None
 
 
-def _missing_message() -> str:
+def _find_uno_interpreter() -> str | None:
+    """The first interpreter that can ``import uno``.
+
+    The worker runs out-of-process precisely because the app's own
+    interpreter usually cannot (venvs), so both candidates are probed
+    cheaply with ``-c`` before anything is launched.
+    """
+    _uno_errors.clear()
+    for name in UNO_CANDIDATES:
+        path = name if os.path.isabs(name) else shutil.which(name)
+        if not path:
+            _uno_errors.append(f"{name}: not found")
+            continue
+        try:
+            result = subprocess.run(
+                [path, "-c", "import uno"], capture_output=True, text=True,
+                timeout=PROBE_TIMEOUT,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            _uno_errors.append(f"{path}: {error}")
+            continue
+        if result.returncode == 0:
+            return path
+        _uno_errors.append(f"{path}: cannot import the 'uno' module")
+    return None
+
+
+def _converter_missing_message() -> str:
     message = (
         "PDF export needs LibreOffice on PATH. Install it "
         "(for example: sudo apt install libreoffice-writer) and export again."
     )
-    if _probe_errors:
-        message += "\n\nDetails from the failed probe:\n" + "\n".join(_probe_errors)
+    if _converter_errors:
+        message += ("\n\nDetails from the failed probe:\n"
+                    + "\n".join(_converter_errors))
     return message
+
+
+def _uno_missing_message() -> str:
+    message = (
+        "LibreOffice is installed, but no Python could load its scripting "
+        "bindings (the 'uno' module), which PDF export drives. Install them "
+        "(on Debian/Ubuntu: sudo apt install python3-uno) and export again."
+    )
+    if _uno_errors:
+        message += "\n\nDetails from the failed probe:\n" + "\n".join(_uno_errors)
+    return message
+
+
+def _run_uno(interpreter: str, docx: Path, pdf_path: Path,
+             soffice: str, workdir: Path) -> subprocess.CompletedProcess:
+    """The seam tests stand on: everything past here is LibreOffice."""
+    return subprocess.run(
+        [interpreter, str(UNO_SCRIPT), str(docx), str(pdf_path),
+         soffice, str(workdir)],
+        capture_output=True, text=True, timeout=CONVERT_TIMEOUT,
+    )
 
 
 def convert(docx: Path, destination: Path) -> None:
@@ -77,35 +137,28 @@ def convert(docx: Path, destination: Path) -> None:
 
     The scratch outdir lives beside the destination rather than in
     ``/tmp``: the final move is an ``os.replace``, which only works
-    within one filesystem, and exports land on the writer's disk.
-    A private LibreOffice profile keeps this run from talking to (or
-    deadlocking on) a LibreOffice the writer already has open.
+    within one filesystem, and exports land on the writer's disk. The
+    worker keeps LibreOffice's private profile inside that same scratch,
+    so a run never talks to (or deadlocks on) a LibreOffice the writer
+    already has open.
     """
     command = find_converter()
     if command is None:
-        raise ConversionError(_missing_message())
+        raise ConversionError(_converter_missing_message())
+    interpreter = _find_uno_interpreter()
+    if interpreter is None:
+        raise ConversionError(_uno_missing_message())
     workdir = Path(tempfile.mkdtemp(
         prefix=".lekhak-pdf-", dir=str(destination.parent)))
     try:
-        profile = workdir / "profile"
-        arguments = command + [
-            f"-env:UserInstallation={profile.as_uri()}",
-            "--headless", "--norestore",
-            "--convert-to", "pdf",
-            "--outdir", str(workdir),
-            str(docx),
-        ]
+        produced = workdir / (docx.stem + ".pdf")
         try:
-            result = subprocess.run(
-                arguments, capture_output=True, text=True,
-                timeout=CONVERT_TIMEOUT,
-            )
+            result = _run_uno(interpreter, docx, produced, command[0], workdir)
         except subprocess.TimeoutExpired as error:
             raise ConversionError(
                 f"LibreOffice did not finish within {CONVERT_TIMEOUT} seconds; "
                 "gave up."
             ) from error
-        produced = workdir / (docx.stem + ".pdf")
         if result.returncode != 0 or not produced.is_file():
             detail = (result.stderr or result.stdout).strip()[-1000:]
             raise ConversionError(
