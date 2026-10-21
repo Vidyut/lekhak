@@ -4,6 +4,9 @@ Lekhak is an early Linux-first desktop environment for planning and writing
 long documents. It is deliberately not a Scrivener clone: its project format is
 transparent, recoverable, and designed around ordinary files.
 
+For screenshots, a detailed feature tour and more help, see the
+[Lekhak page on vidyut.info](https://vidyut.info/downloads/lekhak/).
+
 ## Current MVP
 
 - Neutral binder: folders contain anything, several roots sit side by side,
@@ -47,47 +50,76 @@ transparent, recoverable, and designed around ordinary files.
   status bar; insert one with `Ctrl+L`
 - Word counts and keyboard shortcuts
 
-Projects are directories ending in `.lekhak`. Existing `.manuscript` projects
-remain supported. Section contents live in
+Projects are directories ending in `.lekhak`. Section contents live in
 `documents/*.html`; `project.sqlite3` stores titles, ordering, and metadata.
 
 ## Install
 
-Python 3.9+ (any common distro/system Python), Qt 6 via PySide6. Two
-dependencies, no environment juggling:
+You need **Python 3.9 or newer**: on Windows, install it from
+[python.org](https://www.python.org/downloads/) and tick "Add python.exe
+to PATH"; on Linux use your package manager (`sudo apt install python3`);
+on macOS use Homebrew (`brew install python3`) or python.org — the
+macOS system stub alone is not enough. Everything else is installed
+below.
+
+### Step 1 — get the code
 
 ```bash
-# easiest — pipx installs into its own isolated venv and puts `lekhak` on PATH
-pipx install .
-
-# or into any Python you already have
-pip install --user .
-lekhak
+git clone https://github.com/Vidyut/lekhak.git
+cd lekhak
 ```
 
-`pip install .` inside a virtualenv works too, but you should not need
-one. Windows and macOS shortcuts: `scripts/install_windows.ps1`,
-`scripts/install_macos.sh` (see Desktop launchers below).
+No Git? On the GitHub page click **Code → Download ZIP**, unzip it, and
+run every command below from inside the unzipped `lekhak` folder.
 
-## Desktop launchers
+### Step 2 — install
 
-After installing the package (steps above), put Lekhak in your
-launcher/menu with the platform script — all are user-level, no root:
+Run from the `lekhak` folder. This builds a private Python environment
+inside the checkout — nothing system-wide is touched.
+
+**Linux / macOS** (Terminal):
 
 ```bash
-# Linux: ~/.local/share/applications/lekhak.desktop + hicolor icons
-python3 scripts/install_linux.py            # --check, --uninstall
+python3 -m venv .venv
+.venv/bin/pip install -e .
 ```
+
+**Windows** (PowerShell or Command Prompt):
 
 ```powershell
-# Windows: Start Menu shortcut (add -Desktop for the desktop too)
+py -3 -m venv .venv
+.venv\Scripts\pip install -e .
+```
+
+### Step 3 — add a launcher
+
+No root or admin rights on any platform.
+
+**Linux** — application-menu entry plus icons:
+
+```bash
+python3 scripts/install_linux.py          # --check, --uninstall
+```
+
+**Windows** — Start Menu shortcut (add `-Desktop` for the desktop too):
+
+```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install_windows.ps1
 ```
 
+**macOS** — builds `~/Applications/Lekhak.app` (`--remove` deletes it):
+
 ```bash
-# macOS: builds ~/Applications/Lekhak.app (--remove to delete)
 bash scripts/install_macos.sh
 ```
+
+### Start it
+
+Search for **Lekhak** in your application menu, Start Menu, or Spotlight.
+From a terminal: `.venv/bin/lekhak` (Windows: `.venv\Scripts\lekhak`).
+
+Already comfortable with pipx? `pipx install .` replaces Step 2, and the
+Step 3 script finds it on your PATH.
 
 `scripts/render_icons.py` bakes `packaging/lekhak.svg` into the PNG/ICO
 artifacts; re-run it after changing the icon.
@@ -103,3 +135,7 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 Content writes go to a sibling temporary file, are flushed and synced, and are
 then atomically moved into place. The database uses WAL mode. Project backups
 copy the database and document directory without changing the working project.
+
+## License
+
+GNU General Public License v3.0 or later.
