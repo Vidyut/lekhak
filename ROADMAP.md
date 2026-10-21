@@ -572,8 +572,8 @@ as text ("dates changed to dates directly"). Whole-library import of the
 author's real dump: 3 books, 330 documents, 406k words in ~0.15s — the
 2.6MB file is not too big. File menu: "Import Scrivener Dump…" into the
 open project, and "…into New Project…" which creates a fresh `.lekhak`
-named after the dump file. Still open in this item: plain Markdown
-import, `.yw7`, `.scriv` XML, clean Markdown export, PDF.
+named after the dump file. Still open in this item: `.yw7`, `.scriv` XML,
+clean Markdown export, PDF.
 **Design note for the Markdown import (author's idea, 2026-10-20):**
 "insert specific strings as dividers for the splitter — [this string]
 begins a chapter, [that string] begins a scene." The importer should
@@ -582,6 +582,23 @@ not impose a heading convention: the writer names the divider strings
 and the file splits on those, pandoc-free, everything between dividers
 becoming the document's prose. Same placement stack as the dump import
 once the blocks exist.
+**Markdown import implemented (2026-10-20):** one commit (`d5e50af`).
+File → "Import Markdown File…" / "…into New Project…"; the dialog names
+the book title (default: file stem) and both divider strings (either may
+be emptied to drop that level). A divider must start the stripped line
+and be followed by whitespace — `##nope` is prose — and the scene
+divider is tested first so the more specific string wins when both
+match; a level-3 `###` heading is prose under the default `#`/`##`
+dividers, exact strings by design. Prose before the first divider
+becomes the book's opening scene titled after the book, so a cold open
+is never dropped. Bodies reuse `markdown_to_html`; placement is book →
+chapter → scene, scenes before any chapter landing under the book.
+Tests: `tests/test_markdown_import.py` (16), suite 293.
+**Open edges (markdown import):** the opening scene shares the book's
+title, so `[[Book]]` resolves to the folder (first in binder order) —
+harmless, but a deliberate link to the opening scene needs another
+title; setext headings (`Title` over `===`) are not dividers; no
+front-matter/synopsis extraction — a file is prose and structure only.
 
 ### 2.4 Tracked edits with accept/reject, and AI as a source of them — DONE
 **Request:** "eventually, AI integration and tracked edits to
