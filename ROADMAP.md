@@ -808,6 +808,18 @@ decide license, repo name and what to do about the test fixtures that
 point at the author's corpus paths (the suite itself is portable; ad-hoc
 smokes reference `/home/vidyut/Writing` and must not leak).
 
+**Page view — realistic paged canvas (captured 2026-10-21, not
+scheduled).** Author, deferring deliberately: "we should also be able to
+offer a 'page view' so the writer knows what goes on the page and where
+— this will be needed for books with illustrations. But since I don't do
+them (yet), there is no hurry." A Writer/Word-style layout mode showing
+real pages — the book folder's page size, font size and margins
+rendered as they will print, so placement of illustrations and
+breaks is visible while writing. Depends on 1.15 (page setup data must
+exist per book before anything can render it); editor side needs
+QTextDocument paged view (page size via QTextDocument's paper size +
+paint margins) — investigate when scheduled.
+
 **Book cover generator (captured 2026-10-20, not scheduled).** Full-wrap
 cover from user-provided images: front, back, spine. The value is doing
 the parts writers get wrong and waste days on — spine width computed from
