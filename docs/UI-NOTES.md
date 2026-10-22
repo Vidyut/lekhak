@@ -67,9 +67,23 @@ because they travel with the manuscript and must survive being shared. Put
 per-project settings in Preferences and the same dialog would mean different
 things depending on what is open, which is how settings screens get hated.
 
+## 5. "Section target" should say what it is
+
+The stored field is already `word_target`; only the label hides it. Call it
+**Word count goal**, with the zero state reading **No goal** (not "No
+target"), and give it the "?" hover the rest of the inspector is owed:
+*"A word-count goal for this document. Progress shows on the corkboard card
+and in the status bar. On a folder it needs the children's words added up to
+mean anything."*
+
+The last sentence is also the small gap found today: progress uses the
+document's own count, so a goal set on a folder reads 0% over a subtree. Either
+make folders use the rollup (it exists) or say plainly that goals are for
+scenes and chapters.
+
 **Assigned to the interface side** (`docs/WORK-SPLIT.md`): Preferences
-rebuild and the three items above it, while the engine side keeps working on
-the template spec and the print interior.
+rebuild, the three items above it, and this rename, while the engine side
+keeps working on the template spec and the print interior.
 
 Nothing here changes behaviour, which is exactly why it deserves a proper
 pass instead of a one-dialog patch — it is the screen a writer visits when the
