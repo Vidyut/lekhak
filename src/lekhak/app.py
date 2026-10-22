@@ -3265,6 +3265,13 @@ class MainWindow(QMainWindow):
             self.project.wiki_targets(self.current_id) if not resolved
         ]
 
+    def _show_text_tabs(self, visible: bool) -> None:
+        """Editor and Page belong to a document, not to a container."""
+        for widget in (self.editor_page, self.page_view):
+            index = self.views.indexOf(widget)
+            if index >= 0:
+                self.views.setTabVisible(index, visible)
+
     def _folder_view_widget(self):
         """The tab a folder selection lands on: the writer's last choice.
 
@@ -3329,8 +3336,15 @@ class MainWindow(QMainWindow):
                 max(0, self.page_break_box.findData(document.page_break))
             )
             self._refresh_book_widgets(document)
-            if document.kind == "folder" and self.views.currentWidget() is self.editor_page:
-                self.views.setCurrentWidget(self._folder_view_widget())
+            if document.kind == "folder":
+                # A container is not prose (docs/UI-NOTES.md 3): leaving the
+                # text tabs live invites someone to type into a folder and meet
+                # the formatting mess much later, in an export.
+                if self.views.currentWidget() in (self.editor_page, self.page_view):
+                    self.views.setCurrentWidget(self._folder_view_widget())
+                self._show_text_tabs(False)
+            else:
+                self._show_text_tabs(True)
         else:
             self.editor.clear()
             self.editor.begin_document(self.project, None)
