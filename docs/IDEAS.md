@@ -27,10 +27,18 @@ anything purely decorative has to justify itself or go.
   "put it back" — like a file manager. Drag and drop wherever you like.
   Writers are attached to their words; letting them visit the afterlife is
   cheap goodwill.
-- **Worldbuilding as a first-class top level.** Characters, places, magic
-  systems, languages: folders, not a special object type — a character sheet
-  is just a folder with a synopsis and metadata. Four top levels, then:
-  **Manuscript, Worldbuilding, Templates, Trash.**
+- **Worldbuilding is just folders — and there is no Manuscript/Worldbuilding
+  split.** A character sheet is a folder with a synopsis and metadata, exactly
+  like a chapter; notes, places and languages are more folders, and they can
+  be exported like anything else when the writer selects them. Three areas,
+  then: **the project folder** (named after the project, holding everything),
+  **Templates**, and **Trash**.
+
+  Consequence to settle: with reference material inside the same tree, the
+  project's word total counts it. Trash should be excluded; whether notes and
+  research should *count* is the writer's call, and the honest default is that
+  what you can see is what is counted. A folder flag ("not manuscript") could
+  come later if numbering ever feels wrong.
 - **Auto-linking from filenames.** If a metadata value *exactly* matches a
   document title, it links to it. Instances of a document's title inside the
   text become links too, auto-listed in the sidebar for the document you are
