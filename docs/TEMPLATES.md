@@ -373,8 +373,19 @@ point of writing, which is where that belongs — and the completions list shoul
 offer the project's real metadata keys, so the exact spelling is a pick rather
 than a memory test.
 
-One guard, a warning rather than a silence: a metadata key named exactly like a
-built-in (`Title`), where built-ins win.
+**The convention that falls out of that** (the author's example): built-in
+values are CamelCase, so the lowercase spelling of any of them is free for the
+writer's own use. `${Title}` is the binder title; `${title}` is *their* `title`
+key — set on a document, a chapter, a book or the project, and inherited
+downward like any other metadata. So a chapter named `3 - Zayn meets Ari` can
+print under a `title` the writer chose to give it, without a mechanism, a
+prefix rule, or a second syntax: one namespace and exact matching already do
+it.
+
+Nothing is set by default, so an unset `${title}` resolves to nothing — and the
+slot editor's unknown-key check says so *while the template is being written*,
+which is when that is cheap to fix. The one collision worth a warning remains a
+metadata key named exactly `Title`, where the built-in wins.
 
 **Application-level metadata (Preferences).** A key/value list in
 Preferences applies to every export of every project: set `Author = …` once
