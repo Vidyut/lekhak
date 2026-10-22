@@ -48,6 +48,29 @@ settings by subject.** Concretely:
 - **Defaults shown, not implied**: say what will happen if the writer touches
   nothing (as the AI section partly does with "empty for local servers").
 
+The author's own sketch of the shape:
+
+- **Interface** — font size, and a **slider** is probably the right control
+  (with a live sample), rather than a spin box.
+- **Defaults for new work** — author, default template, default metadata.
+- **AI** — behind an accordion; endpoint, model, key, the small-model warning
+  (`docs/AI.md`).
+- **Pasting**, **Read aloud**, **Updates** — their own sections or accordions.
+- **Metadata** — the app-level key/value list (`docs/TEMPLATES.md` §3.1).
+
+**The distinction to keep straight: Preferences holds app-wide settings and
+*defaults*; anything per-project stays with the project.** An author set in
+Preferences is the value a new project starts from, and a fallback for
+projects that say nothing — but the project's own Author, its metadata and its
+template association live in the project (the inspector already holds them),
+because they travel with the manuscript and must survive being shared. Put
+per-project settings in Preferences and the same dialog would mean different
+things depending on what is open, which is how settings screens get hated.
+
+**Assigned to the interface side** (`docs/WORK-SPLIT.md`): Preferences
+rebuild and the three items above it, while the engine side keeps working on
+the template spec and the print interior.
+
 Nothing here changes behaviour, which is exactly why it deserves a proper
 pass instead of a one-dialog patch — it is the screen a writer visits when the
 software has already confused them.
