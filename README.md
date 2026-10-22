@@ -105,16 +105,22 @@ checkout — nothing system-wide, no administrator rights needed.
 On Linux or Mac:
 
 ```bash
-python3 -m venv .venv          # make a small private Python for Lekhak
-.venv/bin/pip install -e .     # install Lekhak into it
+python3 -m venv .venv              # make a small private Python for Lekhak
+.venv/bin/pip install --upgrade pip    # installers do the fetching: keep yours current
+.venv/bin/pip install -e .         # install Lekhak into it
 ```
 
 On Windows (in PowerShell):
 
 ```powershell
 py -3 -m venv .venv
+.venv\Scripts\pip install --upgrade pip
 .venv\Scripts\pip install -e .
 ```
+
+Worth doing once in a while even if you installed long ago: `pip` is the thing
+that fetches everything else, so its own security updates matter more than
+most. (Lekhak itself does not use pip, `uv`, or `certifi` while it runs.)
 
 **Finally, make it start like a normal app.** One command, and Lekhak will
 show up in your applications menu.
