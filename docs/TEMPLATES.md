@@ -355,25 +355,26 @@ Implementation is a *flattening*, not new syntax: each resolved metadata entry
 is published under both its own name and its `Metadata.` alias, so the parser
 never learns a second rule.
 
-**Names are case-insensitive, and may contain spaces.** The author's example of
-what a template should feel like:
+**Names are exact, and may contain spaces** — the author's call: case
+insensitivity anywhere is bloat, saved by not having it. A name is trimmed at
+its ends and then matched as written, which is what the code already does
+(`PLACEHOLDER_RE` accepts spaces, and the lookup strips the ends), so the only
+engine change is publishing resolved metadata under its bare name as well as
+its `Metadata.` alias.
 
 ```
-${author} wrote ${Book title} as a part of the ${series} series.
+${Author} wrote ${Book title} as a part of the ${Series} series.
 ```
 
-So `${author}`, `${Author}` and `${AUTHOR}` are the same value, and
-`${Book title}` finds a metadata key of that name. Matching normalises the name
-— casefolded, trimmed, internal runs of whitespace collapsed — on both sides,
-which is what makes it easy to remember: you type what you want to see, not a
-path to it.
+Case therefore matters: `${author}` is a different name from `${Author}`, and
+as a typo it resolves to nothing. The safety net is the validation the slot
+editor already runs — an unknown key is reported as a tier-1 error at the
+point of writing, which is where that belongs — and the completions list should
+offer the project's real metadata keys, so the exact spelling is a pick rather
+than a memory test.
 
-Two guards follow from that, and both are warnings rather than silence:
-
-- a metadata key that normalises the same as a **built-in** (`${title}` when
-  `Title` exists) — built-ins win, and the warning says so;
-- two metadata keys that normalise to the **same name** on one document
-  (`Book title` and `book  title`) — the writer meant one of them.
+One guard, a warning rather than a silence: a metadata key named exactly like a
+built-in (`Title`), where built-ins win.
 
 **Application-level metadata (Preferences).** A key/value list in
 Preferences applies to every export of every project: set `Author = …` once
