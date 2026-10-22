@@ -34,11 +34,12 @@ anything purely decorative has to justify itself or go.
   then: **the project folder** (named after the project, holding everything),
   **Templates**, and **Trash**.
 
-  Consequence to settle: with reference material inside the same tree, the
-  project's word total counts it. Trash should be excluded; whether notes and
-  research should *count* is the writer's call, and the honest default is that
-  what you can see is what is counted. A folder flag ("not manuscript") could
-  come later if numbering ever feels wrong.
+  **Trash and Templates are outside the manuscript: never exported, never
+  counted.** Templates already are (2.1 excludes template subtrees from the
+  compile and their words from the project total); Trash gets the same
+  treatment when it exists. Everything else — notes, research, characters —
+  counts and exports like any other folder, because it is one: if the writer
+  selected it, they meant it.
 - **Auto-linking from filenames.** If a metadata value *exactly* matches a
   document title, it links to it. Instances of a document's title inside the
   text become links too, auto-listed in the sidebar for the document you are
