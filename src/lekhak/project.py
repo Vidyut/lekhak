@@ -1381,6 +1381,21 @@ class Project:
         """Replace one folder's print geometry; None removes the entry.
         An invalid dict raises ValueError rather than silently storing
         something export would then refuse to read."""
+        # Paper belongs to a book, not to a paragraph (docs/UI-NOTES.md 7):
+        # a folder may hold it even before it has contents, a chapter may not,
+        # because a chapter is not a book. Clearing is allowed anywhere, so
+        # stale data can always be tidied away.
+        if values is not None:
+            document = next((d for d in self.documents()
+                             if d.id == document_id), None)
+            if document is None:
+                raise KeyError(document_id)
+            if document.kind != "folder":
+                raise ValueError(
+                    "Page setup belongs to a folder, not to a chapter or a "
+                    "document. Set it on the folder that holds this one, or "
+                    "use a template that carries the trim."
+                )
         cleaned = clean_page_setup(values) if values is not None else None
         if values is not None and cleaned is None:
             raise ValueError(f"invalid page setup: {values!r}")
