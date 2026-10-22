@@ -126,7 +126,8 @@ def _uno_missing_message() -> str:
 
 
 def _run_uno(interpreter: str, docx: Path, pdf_path: Path,
-             soffice: str, workdir: Path) -> subprocess.CompletedProcess:
+             soffice: str, workdir: Path,
+             script: Path = UNO_SCRIPT) -> subprocess.CompletedProcess:
     """The seam tests stand on: everything past here is LibreOffice.
 
     The worker runs as its own session leader because it starts LibreOffice
@@ -134,9 +135,13 @@ def _run_uno(interpreter: str, docx: Path, pdf_path: Path,
     alive — and convert() would then delete the profile directory out from
     under the survivor, so the *next* export fails for reasons nothing in
     its own run explains. Killing the whole process group takes both.
+
+    ``script`` defaults to the PDF worker; ODT import drives the same
+    seam with its own worker (``uno_odt.py``), so the kill-on-timeout
+    rule holds for both without being written twice.
     """
     process = subprocess.Popen(
-        [interpreter, str(UNO_SCRIPT), str(docx), str(pdf_path),
+        [interpreter, str(script), str(docx), str(pdf_path),
          soffice, str(workdir)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         start_new_session=True,      # so the group can be killed as one

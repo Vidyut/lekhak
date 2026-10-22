@@ -149,6 +149,44 @@ paragraphs and styles, and the LibreOffice UNO path we already drive for ODT.
 heading styles; importing it twice warns "identical"; nothing existing is
 touched.
 
+**Built (2026-10-22).** File → Import DOCX/ODT File…. `importer.parse_docx`
+drives python-docx: Heading 1 → chapter (flat under the book), deeper
+headings → scenes under the chapter in force, prose accumulates into the
+open container, prose before any heading opens an "Opening" scene under the
+book; the folder takes the document's Title property, else the filename; a
+heading is its container's binder title and never its content; bold, italic
+and underline ride inside their runs, with a paragraph-text fallback for
+field/hyperlink text. `import_docx` reuses the floor untouched —
+identical content warns, an insisted copy lands as "Title (2)", prose is
+never overwritten — and the file-dialog handler wraps it exactly like the
+four existing importers.
+
+The ODT half converts **once, before the floor runs** (the floor re-runs
+the import into a scratch project; a LibreOffice launch is far too
+expensive twice): `odt.convert` drives `uno_odt.py`, a worker mirroring
+`uno_pdf.py` on pdf.py's seam — `_run_uno` gained a `script=` parameter so
+the kill-the-process-group-on-timeout rule serves both workers without
+being written twice. The worker drops content indexes before saving (a
+TOC's cached entries would arrive as prose-shaped junk lines) and skips
+`index.update()` (page numbers mean nothing to a reader). Probes and
+failure messages are pdf's machinery re-worded for import: missing
+soffice → "install libreoffice-writer", missing bindings → "install
+python3-uno".
+
+Verified by hand with real LibreOffice, not committed: docx→odt→docx
+round trip through the worker (0.8 s, headings and bold intact, workdir
+cleaned) and LibreOffice's own `idxexample.odt`. The committed suite fakes
+`_run_uno` per the house rule in `tests/test_pdf.py` — it never launches
+LibreOffice. Nineteen tests in `tests/test_docx_import.py`. Suite 519,
+exit 0; mutations caught (heading map demoted, conversion moved inside
+the double-run floor, chapter stacking copied from the markdown loop).
+
+**Quirk noticed, not touched:** `import_markdown_file` stacks each
+chapter under the *previous* one (`chapter_id or folder.id` runs for
+chapters too), so a three-chapter markdown import nests A→B→C instead of
+sitting flat under the book. The docx importer deliberately does not copy
+that; the markdown path is its own fix, out of scope here.
+
 ## 8. AI: local-model default
 Per `docs/AI.md`: the Preferences wording and warning, the `ollama pull`
 instruction, a "minimal edits only" proofreading prompt, and — separately —

@@ -71,9 +71,11 @@ from PySide6.QtWidgets import (
 from . import ai
 from . import pdf
 from . import tts
+from . import odt
 from . import revisions
 from .importer import (
-    dump_books, import_all_books, import_markdown_file, parse_dump,
+    dump_books, import_all_books, import_docx, import_markdown_file,
+    parse_dump,
 )
 from .ywriter import import_yw7
 from .scrivener import import_scriv
@@ -2514,6 +2516,8 @@ class MainWindow(QMainWindow):
                      self.import_ywriter)
         self._action(file_menu, "Import Scrivener Project…", None,
                      self.import_scrivener)
+        self._action(file_menu, "Import DOCX/ODT File…", None,
+                     self.import_docx_odt)
         file_menu.addSeparator()
         self._action(file_menu, "Quit", QKeySequence.Quit, self.close)
 
@@ -4067,8 +4071,8 @@ class MainWindow(QMainWindow):
         without cleaning up afterwards (docs/IMPORTS.md). The measurement is
         crude by design — folder names first, then the prose inside — which is
         enough to tell "the same file again" from "a different draft that
-        happens to use the same folder names", and it serves all four
-        importers through one path.
+        happens to use the same folder names", and it serves every
+        importer through one path.
         """
         root = Path(tempfile.mkdtemp(prefix="lekhak-import-check-"))
         try:
@@ -4526,6 +4530,49 @@ class MainWindow(QMainWindow):
         except Exception as error:
             QMessageBox.critical(self, "Import failed", str(error))
             return
+        self._reload_tree(select_id=folder_id)
+        self.statusBar().showMessage(f"Imported {Path(path).name}", 8000)
+
+    def import_docx_odt(self) -> None:
+        """Import a Word (.docx) or LibreOffice (.odt) manuscript (2.3).
+
+        The ODT becomes a DOCX once, *before* the floor runs: the
+        identical-content check re-runs the import into a scratch
+        project, and a LibreOffice launch is much too expensive to pay
+        twice. Everything after that is importer.import_docx — the same
+        floor, the same numbered copies, the same nothing-overwritten
+        rule as every other importer.
+        """
+        if not self.project:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Word/ODT document", "",
+            "Word and OpenDocument (*.docx *.odt)")
+        if not path:
+            return
+        workdir: Path | None = None
+        try:
+            if not self.save_current():
+                return
+            source = Path(path)
+            if source.suffix.lower() == ".odt":
+                workdir = Path(tempfile.mkdtemp(prefix="lekhak-odt-import-"))
+                converted = workdir / (source.stem + ".docx")
+                odt.convert(source, converted)
+                source = converted
+
+            def run(project):
+                return import_docx(project, source)
+
+            if not self._confirm_import(run):
+                return
+            folder_id = run(self.project)
+        except Exception as error:
+            QMessageBox.critical(self, "Import failed", str(error))
+            return
+        finally:
+            if workdir is not None:
+                shutil.rmtree(workdir, ignore_errors=True)
         self._reload_tree(select_id=folder_id)
         self.statusBar().showMessage(f"Imported {Path(path).name}", 8000)
 

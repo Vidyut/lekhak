@@ -26,7 +26,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from html import escape
 from pathlib import Path
+
+import docx
 
 from .project import Project
 
@@ -439,4 +442,137 @@ def import_markdown_file(project: Project, path: Path, *,
         if kind == "chapter":
             chapter_id = document.id
         project.write_content(document.id, markdown_to_html(chunk.body))
+    return folder.id
+
+
+# --- Word / OpenDocument manuscript import (BUILD-NOW 7) ----------------
+# An ODT reaches this code by first becoming a DOCX (odt.convert), so
+# both formats share one heading map and one import path.
+
+OPENING_TITLE = "Opening"
+
+
+@dataclass
+class DocxChunk:
+    """One heading-delimited span: a chapter, a scene, or the opening run."""
+
+    kind: str          # "chapter" (heading 1) or "scene" (deeper heading / prose)
+    title: str
+    html: str
+
+
+@dataclass
+class DocxManuscript:
+    """A parsed Word document: its Title property and its chunks."""
+
+    title: str
+    chunks: list[DocxChunk]
+
+
+def _heading_level(paragraph) -> int:
+    """1 for a chapter heading, 2+ for a scene heading, 0 for prose.
+
+    Matched against both the style id and its display name, so a
+    localized Word document (name "Überschrift 1", id "Heading1") and a
+    LibreOffice round trip land in the same place.
+    """
+    style = getattr(paragraph, "style", None)
+    if style is None:
+        return 0
+    for token in (getattr(style, "style_id", "") or "",
+                  getattr(style, "name", "") or ""):
+        match = re.match(r"(?i)^heading[\s_-]?(\d)", token.strip())
+        if match:
+            return int(match.group(1))
+    return 0
+
+
+def _paragraph_html(paragraph) -> str:
+    """One paragraph as the editor's HTML; empty when there is no text.
+
+    Bold, italic and underline ride inside their runs — the three the
+    format bar offers, nested in that order. Text that lives outside
+    the runs (fields, hyperlink text in some writers) falls back to the
+    paragraph's own text, so nothing silently disappears.
+    """
+    if not paragraph.text.strip():
+        return ""
+    pieces = []
+    for run in paragraph.runs:
+        text = escape(run.text).replace("\n", "<br/>")
+        if not text:
+            continue
+        if run.bold:
+            text = f"<strong>{text}</strong>"
+        if run.italic:
+            text = f"<em>{text}</em>"
+        if run.underline:
+            text = f"<u>{text}</u>"
+        pieces.append(text)
+    if not pieces:
+        return f"<p>{escape(paragraph.text).replace(chr(10), '<br/>')}</p>"
+    return "<p>" + "".join(pieces) + "</p>"
+
+
+def parse_docx(path: Path) -> DocxManuscript:
+    """Read a Word document into heading-driven chunks.
+
+    Heading 1 opens a chapter; any deeper heading opens a scene under
+    the chapter in force (or under the book before one starts); every
+    other paragraph accumulates as prose into whichever container is
+    open, starting an "Opening" scene when prose comes before any
+    heading. A heading's text becomes its container's binder title and
+    never its content — the rule the markdown splitter follows for
+    divider lines.
+    """
+    document = docx.Document(str(path))
+    title = (document.core_properties.title or "").strip()
+    chunks: list[DocxChunk] = []
+    current: DocxChunk | None = None
+    for paragraph in document.paragraphs:
+        level = _heading_level(paragraph)
+        if level:
+            current = DocxChunk(
+                "chapter" if level == 1 else "scene",
+                paragraph.text.strip() or "Untitled", "")
+            chunks.append(current)
+            continue
+        html = _paragraph_html(paragraph)
+        if not html:
+            continue
+        if current is None:
+            current = DocxChunk("scene", OPENING_TITLE, "")
+            chunks.append(current)
+        current.html += html
+    return DocxManuscript(title, chunks)
+
+
+def import_docx(project: Project, path: Path, *, title: str = "") -> str:
+    """Import a Word (or converted ODT) manuscript as a book; folder id.
+
+    The folder takes the document's Title property, else the caller's
+    title, else the filename. Chapters sit flat under the book — the
+    markdown loop stacks each chapter under the previous one, which is
+    not the binder shape anyone asked for — and scenes land under the
+    current chapter, or under the book while no chapter has started.
+    Containers go through unique_title, so a second import is a numbered
+    copy rather than an overwrite; the identical-content warning ahead
+    of the real run belongs to the floor in app.py.
+    """
+    path = Path(path)
+    parsed = parse_docx(path)
+    folder_title = title.strip() or parsed.title or path.stem
+    folder = project.add_document(
+        project.unique_title(folder_title, None), None, "folder")
+    chapter_id: str | None = None
+    for chunk in parsed.chunks:
+        if chunk.kind == "chapter":
+            document = project.add_document(
+                project.unique_title(chunk.title, folder.id), folder.id,
+                "chapter")
+            chapter_id = document.id
+        else:
+            document = project.add_document(
+                chunk.title, chapter_id or folder.id, "scene")
+        project.write_content(document.id, chunk.html)
     return folder.id
