@@ -15,6 +15,15 @@ corkboard lover is not fought either.
 corkboard with a folder selected and then selecting another folder shows the
 corkboard; reopening the project keeps that choice.
 
+**Built (2026-10-22).** The folder branch opens `_folder_view_widget()`,
+which reads `folder_view` from the project settings (default, junk-safe:
+outliner). A hand click on the corkboard/outliner tab while a folder is
+selected writes the preference; the programmatic switch fires inside
+`_selection_changed` while the selection is loading and writes nothing, and
+document selections never touch it. Five tests in
+`tests/test_folder_view.py`, one per acceptance clause plus junk and the
+document guard. Suite 457, exit 0.
+
 ## Parallel work for an idle small model
 
 Not code. A tiny local model must not edit this repository — and it must not

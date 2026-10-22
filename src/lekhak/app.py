@@ -2148,6 +2148,7 @@ class MainWindow(QMainWindow):
         self.views.currentChanged.connect(
             lambda index: self._refresh_outliner() if self.views.widget(index) is self.outliner else None)
         self.views.currentChanged.connect(self._page_view_tab_changed)
+        self.views.currentChanged.connect(self._view_tab_changed)
 
         self.synopsis = QPlainTextEdit()
         self.synopsis.setPlaceholderText("Synopsis…")
@@ -2871,6 +2872,40 @@ class MainWindow(QMainWindow):
             self.project.wiki_targets(self.current_id) if not resolved
         ]
 
+    def _folder_view_widget(self):
+        """The tab a folder selection lands on: the writer's last choice.
+
+        Stored per project beside editor_zoom, defaulting to the outliner —
+        the denser view earns its place by default, while a corkboard lover
+        is not fought: their switch is remembered for the next folder and
+        for the next open.
+        """
+        name = self.project.get_setting("folder_view", "") if self.project else ""
+        return self.corkboard if name == "corkboard" else self.outliner
+
+    def _view_tab_changed(self, index: int) -> None:
+        """Remember the folder view the writer actually picked.
+
+        Only the corkboard and outliner say anything about folders — Editor
+        and Page are document views. The programmatic switch a folder
+        selection causes runs while the selection is still loading, so it
+        writes nothing: only a hand click on a tab moves the preference.
+        """
+        if self.loading or not self.project:
+            return
+        widget = self.views.widget(index)
+        if widget not in (self.corkboard, self.outliner):
+            return
+        current = next(
+            (d for d in self.project.documents() if d.id == self.current_id),
+            None,
+        )
+        if current is not None and current.kind == "folder":
+            self.project.set_setting(
+                "folder_view",
+                "corkboard" if widget is self.corkboard else "outliner",
+            )
+
     def _selection_changed(self, current, previous) -> None:
         if self.loading:
             return
@@ -2902,7 +2937,7 @@ class MainWindow(QMainWindow):
             )
             self._refresh_book_widgets(document)
             if document.kind == "folder" and self.views.currentWidget() is self.editor_page:
-                self.views.setCurrentWidget(self.corkboard)
+                self.views.setCurrentWidget(self._folder_view_widget())
         else:
             self.editor.clear()
             self.editor.begin_document(self.project, None)
