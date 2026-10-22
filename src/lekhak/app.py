@@ -2307,7 +2307,14 @@ class MainWindow(QMainWindow):
         self.target.setRange(0, 1_000_000)
         self.target.setSingleStep(100)
         self.target.setSuffix(" words")
-        self.target.setSpecialValueText("No target")
+        self.target.setSpecialValueText("No goal")
+        # It is a goal, not a target: the stored field is word_target, and
+        # "section target" made nobody think of a word count (UI-NOTES 5).
+        self.target.setToolTip(
+            "A word-count goal for this document. Progress shows on the\n"
+            "corkboard card and in the status bar. On a folder it counts\n"
+            "only until the children's words are added up."
+        )
         self.target.valueChanged.connect(self._metadata_changed)
 
         # Page start (1.6): which side of the spread this document must
@@ -2376,7 +2383,7 @@ class MainWindow(QMainWindow):
         inspector_layout = QVBoxLayout(inspector)
         inspector_layout.addWidget(QLabel("Synopsis"))
         inspector_layout.addWidget(self.synopsis)
-        inspector_layout.addWidget(QLabel("Section target"))
+        inspector_layout.addWidget(QLabel("Word count goal"))
         inspector_layout.addWidget(self.target)
         inspector_layout.addWidget(QLabel("Page start"))
         inspector_layout.addWidget(self.page_break_box)
