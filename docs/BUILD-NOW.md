@@ -105,6 +105,16 @@ feeds the metadata `Date` value rather than being typed by hand.
 *Acceptance:* inserts today's date in the project's locale and is undoable as
 one step.
 
+**Built (2026-10-22).** Edit → Insert Date / Insert Date and Time. The
+prose gets the system locale's long date (there is no per-project locale
+setting to read, so the system's is the project's), optionally the short
+time; the caret lands after the insert so typing continues. The same call
+merges an ISO ``Date`` row into the document's metadata (`date` type for
+the inspector's widget, existing rows and their types kept — set_metadata
+replaces wholesale) and refreshes the inspector. One edit block: a single
+undo removes it. Folders and no-project refuse with a status message.
+Seven tests in `tests/test_insert_date.py`. Suite 491, exit 0.
+
 ## 6. Session goal
 A per-day word target beside the existing per-section targets, with progress
 in the status bar and the day's delta from the session start.

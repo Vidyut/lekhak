@@ -46,8 +46,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import (
-    QDate, QEvent, QItemSelectionModel, QMimeData, QSettings, QSize, Qt,
-    QTimer, QUrl, Signal,
+    QDate, QEvent, QItemSelectionModel, QLocale, QMimeData, QSettings, QSize,
+    Qt, QTimer, QTime, QUrl, Signal,
 )
 from PySide6.QtGui import (
     QAction, QDesktopServices, QFont, QKeySequence,
@@ -2519,6 +2519,15 @@ class MainWindow(QMainWindow):
         self._action(edit_menu, "Paste and Keep All Formatting", None,
                      self.editor.paste_keep_all)
         edit_menu.addSeparator()
+        # The writer's own date, twice over (BUILD-NOW 5): into the prose
+        # in the system locale's words, and into the document's Date
+        # metadata as the ISO value the inspector's date widget stores —
+        # one action, so the day is never typed by hand twice.
+        self._action(edit_menu, "Insert Date", None,
+                     lambda: self.insert_date(with_time=False))
+        self._action(edit_menu, "Insert Date and Time", None,
+                     lambda: self.insert_date(with_time=True))
+        edit_menu.addSeparator()
         # Tracked changes (2.4): a toggle plus the two bulk resolutions;
         # the passes dialog sits between them and per-change granularity.
         self.track_action = QAction("Track Changes", self)
@@ -2646,6 +2655,48 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Print failed", str(error))
             return
         self.statusBar().showMessage("Handed to the system print flow", 5000)
+
+    def insert_date(self, with_time: bool = False) -> None:
+        """BUILD-NOW 5: today at the caret, with the Date metadata fed too.
+
+        The prose gets the system locale's own words ("22 October 2026"),
+        optionally followed by the short time; the document's ``Date``
+        metadata gets the ISO value the inspector's date widget parses —
+        merged into the existing rows, because set_metadata replaces the
+        whole set. One edit block: a single undo takes the whole thing
+        back out.
+        """
+        document = self._current_document()
+        if not self.project or document is None:
+            self.statusBar().showMessage("Open a document first", 3000)
+            return
+        if document.kind == "folder":
+            self.statusBar().showMessage(
+                "Folders have no text to date", 3000)
+            return
+        date = QDate.currentDate()
+        locale = QLocale.system()
+        text = locale.toString(date, QLocale.FormatType.LongFormat)
+        if with_time:
+            text += ", " + locale.toString(
+                QTime.currentTime(), QLocale.FormatType.ShortFormat)
+        cursor = self.editor.textCursor()
+        cursor.beginEditBlock()
+        cursor.insertText(text)
+        cursor.endEditBlock()
+        self.editor.setTextCursor(cursor)   # caret after the date: keep typing
+        # Feed Date beside whatever metadata the document already carries.
+        entries = self.project.metadata_entries(self.current_id)
+        values = {key: row[0] for key, row in entries.items()}
+        types = {key: row[1] for key, row in entries.items()}
+        options = {key: row[2] for key, row in entries.items()}
+        values["Date"] = date.toString(Qt.ISODate)
+        if "Date" not in types:
+            types["Date"] = "date"     # the inspector's date widget
+            options["Date"] = []
+        self.project.set_metadata(self.current_id, values, types, options)
+        self._populate_metadata_table()
+        self.statusBar().showMessage(f"Inserted {text}", 5000)
 
     def quick_open(self) -> None:
         """BUILD-NOW 2: jump to a document by title.
