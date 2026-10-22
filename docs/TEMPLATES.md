@@ -498,8 +498,11 @@ channel.
 
 ## 10. Open, small
 
-- Text export stays structural (titles and headings as lines, no form feeds)
-  — PROPOSED. Markdown likewise.
+- Text export pagination: **settled 2026-10-22 — no form feeds.** Text
+  and markdown stay structural (titles and headings as lines, units
+  separated by blank lines); pagination belongs to the page-setup
+  formats (PDF/DOCX, page setup / PRINT.md). EPUB needed no decision:
+  one XHTML file per compiled unit already is pages.
 - A container that has prose of its own prints that prose on its heading page
   rather than dropping it — PROPOSED (nothing is ever silently discarded).
 - Running heads: only once page setup exists, or always? PROPOSED: only with

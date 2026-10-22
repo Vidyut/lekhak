@@ -244,6 +244,21 @@ explanation removed).
 Text export pagination (form feed or not) and the EPUB note that per-unit
 files already are pages.
 
+**Built (2026-10-22).** Settled both. Text and markdown export stay
+structural — titles and headings as lines, units separated by blank lines
+— with no form feeds, deliberately: pagination is the page-setup formats'
+job (PDF/DOCX, page setup / PRINT.md), and a `.txt` carrying form feeds is
+neither a good reading copy nor a printable one. The decision now lives
+where the writer will find it: `export_text` and `export_markdown`
+docstrings, and the TEMPLATES.md §10 ledger line flipped from PROPOSED to
+settled with the date. EPUB needed no decision and no code: its one XHTML
+file per compiled unit already *is* pages — now said in the
+`export_epub` docstring and the ledger line, and pinned by a test that
+counts the section files against the units. Five tests in
+`tests/test_text_pagination.py`. Suite 545, exit 0; mutations caught
+(form feeds injected into the text export, the blank-line unit gap
+collapsed).
+
 ## Print copies, and covers (near-term: the author needs book 1 and 2 on KDP)
 
 Two different DOCX jobs, and they must not be confused:

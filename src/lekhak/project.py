@@ -2183,6 +2183,13 @@ class Project:
 
         The same compiled units as every other export, with markup
         stripped; header/footer slots are joined with blank lines.
+
+        Pagination decision (BUILD-NOW 9, settled 2026-10-22): no form
+        feeds, deliberately. A .txt is structural — titles and headings
+        as lines, units separated by blank lines — and pagination is the
+        page-setup formats' job (PDF/DOCX, page setup / PRINT.md). Form
+        feeds would make the file neither a good reading copy nor a
+        printable one.
         """
         templates = templates or TemplateSet.builtin()
         units = self.compile_units(selected_ids, templates, html=False,
@@ -2214,6 +2221,8 @@ class Project:
         links become plain words (the text-fallthrough of the 2.2 link
         pass); resolved targets inside the export do not become real
         markdown links, which have no notion of a sibling document.
+        Form feeds likewise stay out (BUILD-NOW 9): markdown is
+        structural too.
         """
         # Local import: importer imports Project at module level.
         from .importer import markdown_from_html
@@ -2465,6 +2474,10 @@ class Project:
         One XHTML page per compiled unit, plus the nav document the spec
         requires and, when the template set defines a non-empty toc_page
         slot, a visible contents page as the first content page.
+
+        The per-unit files *are* the pagination (BUILD-NOW 9): a reader
+        turns pages by unit, so the form-feed question that text export
+        had to settle does not arise here.
         """
         templates = templates or TemplateSet.builtin()
         units = self.compile_units(selected_ids, templates, html=True,
