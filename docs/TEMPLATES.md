@@ -539,6 +539,13 @@ hence the folder-only guard for the low-level override (1.15's mechanism, kept
 but no longer a route we advertise, `docs/UI-NOTES.md` 7) and the export
 warning when a selection spans books with different trims.
 
+**And the boundary of our responsibility is the picker.** Offering paper
+selection per document or per chapter would be *our* mistake; that is the
+accident being prevented. Beyond it, the template belongs to the writer: if
+they build differently sized pages into their book template to get a mixed-size
+file, then they are a determined person using their own tools to do what they
+want, and who are we to stand in the way.
+
 ## 10. Open, small
 
 - Text export pagination: **settled 2026-10-22 — no form feeds.** Text
