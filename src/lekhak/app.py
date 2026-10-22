@@ -2337,6 +2337,10 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("&File")
         self._action(file_menu, "&New Project…", QKeySequence.New, self.new_project)
         self._action(file_menu, "&Open Project…", QKeySequence.Open, self.open_project)
+        # Open Recent (BUILD-NOW 1): filled on demand, so a project deleted
+        # on disk between two openings never offers a broken entry.
+        self.recent_menu = file_menu.addMenu("Open &Recent")
+        self.recent_menu.aboutToShow.connect(self._populate_recent_menu)
         self._action(file_menu, "&Save and Back Up", QKeySequence.Save, self.manual_save)
         self._action(file_menu, "Choose Backup Folder…", None, self.choose_backup_folder)
         file_menu.addSeparator()
@@ -2475,6 +2479,21 @@ class MainWindow(QMainWindow):
         selected = QFileDialog.getExistingDirectory(self, "Open .lekhak project")
         if not selected:
             return
+        self._open_path(selected)
+
+    def _open_path(self, selected: str) -> None:
+        """Open a project from a path — the dialog and Open Recent share it.
+
+        A folder that is already gone when the entry is clicked (deleted
+        between menu build and click) is pruned from the list and reported
+        in the status bar; there is nothing to open and no error to raise.
+        """
+        if not Path(selected).is_dir():
+            self.statusBar().showMessage(
+                f"{selected} no longer exists", 5000)
+            entries = [p for p in self._recent_projects() if p != selected]
+            QSettings().setValue("session/recentProjects", entries)
+            return
         try:
             project = Project(Path(selected))
             project.open()
@@ -2482,6 +2501,48 @@ class MainWindow(QMainWindow):
             self._switch_project(project)
         except Exception as error:
             QMessageBox.critical(self, "Could not open project", str(error))
+
+    def _recent_projects(self) -> list[str]:
+        raw = QSettings().value("session/recentProjects", [])
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            raw = [raw] if raw else []
+        return [str(entry) for entry in raw]
+
+    def _record_recent(self, path: str) -> None:
+        """Newest first, no duplicates, eight at most.
+
+        Called only from _switch_project's tail — a switch the writer
+        cancelled (failed save) records nothing.
+        """
+        entries = [p for p in self._recent_projects() if p != path]
+        entries.insert(0, path)
+        QSettings().setValue("session/recentProjects", entries[:8])
+
+    def _populate_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        entries = self._recent_projects()
+        live = [p for p in entries if Path(p).is_dir()]
+        if live != entries:
+            # The folder is gone: drop it now, so the list agrees with
+            # disk rather than offering a broken entry.
+            QSettings().setValue("session/recentProjects", live)
+        if not live:
+            empty = self.recent_menu.addAction("No recent projects")
+            empty.setEnabled(False)
+            return
+        names = []
+        for path in live:
+            base = Path(path).name
+            label = base[:-len(".lekhak")] if base.endswith(".lekhak") else base
+            names.append(label or path)
+        for path, name in zip(live, names):
+            label = name if names.count(name) == 1 else f"{name} — {Path(path).parent.name}"
+            action = self.recent_menu.addAction(label)
+            action.setToolTip(path)
+            action.triggered.connect(
+                lambda _checked=False, p=path: self._open_path(p))
 
     def _switch_project(self, project: Project) -> None:
         # A failed save cancels the switch: the editor still holds the only
@@ -2517,6 +2578,9 @@ class MainWindow(QMainWindow):
         self._populate_metadata_table()
         self._refresh_related()
         self._refresh_book_widgets(self._current_document())
+        # Open Recent: written only here — at the tail, so a switch that
+        # failed its save (early return above) records nothing.
+        self._record_recent(str(project.root))
 
     def _restore_cursor(self) -> None:
         """Session resume (1.9): put the caret back where the last save left it.

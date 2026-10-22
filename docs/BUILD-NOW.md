@@ -42,6 +42,13 @@ successful switch only.
 and deleting one on disk removes it from the list rather than offering a
 broken entry.
 
+**Built (2026-10-22).** `session/recentProjects`, recorded at the tail of
+`_switch_project` (a cancelled switch records nothing), capped at eight,
+pruned on every menu build *and* on a click that finds the folder already
+gone — which reports in the status bar instead of raising. Entries show the
+folder name without `.lekhak`, disambiguated by parent when two share one.
+Eight tests in `tests/test_recent_projects.py`. Suite 465, exit 0.
+
 ## 2. Quick open — `Ctrl+P`
 A one-field palette over document titles in binder order (substring, then
 fuzzy), Enter selects, Esc closes; it only *navigates*, never edits or
