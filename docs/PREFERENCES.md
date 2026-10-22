@@ -63,6 +63,44 @@ manuscript belongs to the project, in the inspector
     verbose-logging toggle. The place to put things that are useful twice a
     year and alarming every other day.
 
+## Each category, in detail
+
+`scope` is the part that matters: **app** is a setting of this installation,
+**default** is a value a new project starts from (the project's own value, in
+the inspector, always wins). Nothing here is per-document.
+
+| Category | Control | Key | scope | default |
+|---|---|---|---|---|
+| Appearance | interface font size, slider + live sample | `ui/fontSize` | app | the system's |
+| Editor | spell check on/off | `spell/enabled` | app | on if a dictionary is found |
+| Editor | word list file | `spell/dictionary` | app | `<project>/dictionary.txt` |
+| Files & saving | backup folder | `backup/defaultFolder` | default | inside the project |
+| Files & saving | backups to keep | `backup/keep` | default | 10 |
+| Files & saving | autosave delay | `editor/autosaveMs` | app | 700 |
+| Files & saving | reopen last project on start | `session/reopenLast` | app | on |
+| Pasting | four checkboxes | `paste/fonts`, `paste/paragraphs`, `paste/inline`, `paste/alignment` | app | as today |
+| Links & export | unpublished-link policy | `link_policy/default` | default | `keep-as-note` |
+| Links & export | default template set | `templates/default` | default | `default` |
+| Links & export | Author | `metadata/Author` | default | empty |
+| AI | endpoint, model, key | `ai/endpoint`, `ai/model`, `ai/key` | app | Ollama on localhost |
+| AI | proofreading prompt | `ai/prompt` | app | ours, behind the accordion |
+| Read aloud | voice, rate | `tts/voice`, `tts/rate` | app | engine default |
+| Help | manual source: online / offline | `help/source` | app | online |
+| Updates | take fixes / ask / never | `update/mode` | app | take fixes |
+| Updates | check now, and the log | — | app | — |
+| Metadata | key/value rows for every project | `metadata/*` | default | empty |
+| Advanced | open config folder, verbose log | `log/verbose` | app | off |
+
+Two notes that follow from writing it out:
+
+- **"Backups to keep" belongs to the project, not the app** — the backup folder
+  and how many copies live there are decisions about *that* manuscript, and
+  they already live in project settings (`Project.backup`). Preferences can
+  only offer the default for a new project.
+- **No "editor font size" here.** The editor is pinned to 12 pt with its own
+  display zoom (`docs/TEMPLATES.md`, 1.8); a second place to change type size
+  is a second thing to get wrong.
+
 ## Rules the dialog should follow
 
 - **One line per control.** Long explanation behind a "?" — that is level-1
