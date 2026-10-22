@@ -2263,6 +2263,7 @@ class MainWindow(QMainWindow):
         self.corkboard.setWordWrap(True)
         self.corkboard.setGridSize(QSize(220, 150))
         self.corkboard.itemDoubleClicked.connect(self._open_card)
+        self._style_corkboard()
 
         self.outliner = QTreeWidget()
         self.outliner.setUniformRowHeights(True)
@@ -4097,6 +4098,31 @@ class MainWindow(QMainWindow):
             if item.data(0, Qt.UserRole) == document_id:
                 self.tree.setCurrentItem(item)
                 return
+
+    def _style_corkboard(self) -> None:
+        """Cards read as cards, without trusting the theme (UI-NOTES 3).
+
+        The colours are derived from the palette and inverted rather than
+        chosen: a dark desktop gets light cards, a light one gets dark cards,
+        so a card can never blend into its own background because a theme we
+        do not control rendered our colours against us. Only the framing —
+        padding, border, radius, spacing — is ours.
+        """
+        chrome = self.corkboard.palette().window().color()
+        ink_default = self.corkboard.palette().windowText().color()
+        accent = self.corkboard.palette().highlight().color().name()
+        dark_chrome = chrome.lightness() < 128
+        card = "#f4f4f4" if dark_chrome else "#232323"
+        ink = "#1b1b1b" if dark_chrome else "#f2f2f2"
+        self.corkboard.setSpacing(8)
+        self.corkboard.setStyleSheet(
+            f"QListWidget {{ background: {chrome.name()};"
+            f" color: {ink_default.name()}; }}\n"
+            f"QListWidget::item {{ background: {card}; color: {ink};"
+            " border: 1px solid rgba(128, 128, 128, 0.35);"
+            " border-radius: 8px; padding: 10px 12px; margin: 2px; }\n"
+            f"QListWidget::item:selected {{ border: 2px solid {accent}; }}\n"
+        )
 
     def _refresh_corkboard(self) -> None:
         self.corkboard.clear()
