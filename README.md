@@ -1,148 +1,93 @@
 # Lekhak
 
-Lekhak is an early Linux-first desktop environment for planning and writing
-long documents. It is deliberately not a Scrivener clone: its project format is
-transparent, recoverable, and designed around ordinary files.
+Lekhak is a free, open-source writing app I'm building because I wanted
+something that would let me concentrate on writing novels instead of
+wrestling with software.
 
-For screenshots, a detailed feature tour and more help, see the
-[Lekhak page on vidyut.info](https://vidyut.info/downloads/lekhak/).
+One thing led to another, and it came together quickly enough that I decided
+to add features other writers might find useful and release it for everyone.
 
-## Current MVP
+The idea is simple: **just write.**
 
-- Neutral binder: folders contain anything, several roots sit side by side,
-  nesting is unlimited; chapter/scene/note are labels, not structure
-- Explicit folder, chapter and scene creation actions that land relative to
-  the selection
-- Outliner view: hierarchical table with Title, Kind, Words, Target and
-  user-chosen metadata columns; column picker persisted per project;
-  rollup word counts on containers
-- Corkboard cards linked to binder structure and synopses
-- Rich-text editor and synopsis inspector
-- Distraction-free focus mode and adjustable interface font size
-  (Edit → Preferences…, `Ctrl+,`) — separate from the editor's own zoom
-- Paragraph styles, font controls, alignment, lists, and clear formatting
-  in the editor's own format bar, above the text it acts on
-- Display-only editor zoom (`Ctrl`+scroll, View menu, `Ctrl+0` to reset):
-  enlarges the writing without touching the document's formatting, and is
-  remembered with the project — the Page view scales with it to match
-- Section find/replace, and distraction-free focus mode
-- Per-section word targets with live progress
-- Debounced autosave using atomic file replacement
-- `Ctrl+S` immediate save plus a timestamped full-project backup — rename a
-  backup folder to keep that version forever, and to label it however you
-  like: `20261011-093015-441002` becomes `11Oct26 before the rewrite`.
-  Pruning only ever touches folders still carrying a raw timestamp
-- Per-project selectable backup folder with isolated project subdirectories
-- SQLite metadata with foreign keys and ordered siblings
-- Project-wide search, plus preview-and-confirm replace (regex supported)
-- Plain-text and HTML manuscript export
-- DOCX and EPUB 3 manuscript export in binder order
-- Selective export of any combination of chapters and scenes
-- yw2html-style template sets: slot files per chapter/scene/divider role,
-  `${...}` and `${Metadata.Key}` placeholders, user sets selectable per
-  export, "New set" and "Open folder" in the export dialog
-- Inline table of contents page for EPUB (`toc_page` slot); page-number
-  TOC field for DOCX (update fields in Word/LibreOffice)
-- Cached word counts on every document
-- Arbitrary per-document metadata and reusable export templates
-- Typed metadata with text fields and calendar-backed date fields
-- Dropdown metadata with project-defined allowed values
-- Template fields for title, type, synopsis, word count, content, and metadata
-- Automatic timestamped backups on project open
-- Named section snapshots with reversible restoration
-- Split a section at the cursor (`Ctrl+K`); merge a section with its next
-  sibling (snapshots first, history preserved) — menu and binder context menu
-- Obsidian-style `[[Title]]` internal links that resolve by title, survive a
-  retitle, and are click-through in the editor; broken targets show in the
-  status bar; insert one with `Ctrl+L`
-- Word counts and keyboard shortcuts
+Organise your book into chapters, scenes, notes, folders, or whatever makes
+sense to you. Write in a comfortable editor, keep track of your progress,
+rearrange things as needed, and export when you're ready.
 
-Projects are directories ending in `.lekhak`. Section contents live in
-`documents/*.html`; `project.sqlite3` stores titles, ordering, and metadata.
+Lekhak aims to make producing a properly formatted book as painless as
+possible. Ideally, you should be able to hit Export without knowing anything
+about ebook formatting and still get something usable.
 
-## Install
+It currently supports Word documents (DOCX), EPUB ebooks, PDF, HTML, Markdown
+and plain text. You can also use templates to control how your finished book
+looks.
 
-You need **Python 3.9 or newer**: on Windows, install it from
-[python.org](https://www.python.org/downloads/) and tick "Add python.exe
-to PATH"; on Linux use your package manager (`sudo apt install python3`);
-on macOS use Homebrew (`brew install python3`) or python.org — the
-macOS system stub alone is not enough. Everything else is installed
-below.
+## What's inside
 
-### Step 1 — get the code
+- **A binder that thinks like a book.** Chapters, scenes, notes, folders —
+  nested however you like, rearranged by dragging. A real corkboard and an
+  outliner when you want to see the shape of the thing instead of the words.
+- **Word counts everywhere.** Every scene, every chapter, every folder, the
+  whole project, how much you've written today. Pacing is half of writing,
+  and it's nice to see it.
+- **Targets and progress.** Per-section word goals, and a daily goal if you
+  like watching a number climb.
+- **A comfortable editor.** Paragraph styles, fonts, alignment, lists, a
+  distraction-free mode, and a zoom that makes the letters bigger without
+  touching your document's formatting.
+- **Snapshots and backups.** Take a snapshot before a big change, restore it
+  if the change was a mistake, and keep full-project backups. Rename a backup
+  and it's kept forever.
+- **Tracked changes.** Suggestions — yours or an AI's — arrive as changes you
+  accept or reject. Nothing rewrites your manuscript behind your back.
+- **Links and related files.** `[[Link]]` to any section, and the app shows
+  which documents mention each other. Hover to preview, click to jump.
+- **Metadata that behaves.** Status, POV, dates, your own fields — set on a
+  folder and everything inside inherits it.
+- **Exports you can hand to anyone.** Manuscript or finished book, in DOCX,
+  EPUB, PDF, HTML, Markdown or plain text. Templates decide how it looks.
+- **Imports to bring your work over.** Scrivener projects, yWriter, Word and
+  LibreOffice documents, markdown and HTML — with a safety rule I care about:
+  an import never overwrites anything you already have.
+- **Read your prose aloud**, and if you want, let a local or hosted AI
+  suggest fixes.
 
-```bash
-git clone https://github.com/Vidyut/lekhak.git
-cd lekhak
-```
+## There's more in the works
 
-No Git? On the GitHub page click **Code → Download ZIP**, unzip it, and
-run every command below from inside the unzipped `lekhak` folder.
+- **Ready-made book formatting:** download a free book template or one of
+  Amazon's templates, add it to Lekhak, and let the software try to match the
+  formatting.
+- **Print-ready manuscripts:** interiors that satisfy print-on-demand rules,
+  plus help preparing a cover — spine, bleed and all — without either of us
+  becoming a graphic designer.
+- **AI-assisted editing:** catch typos, mistakes and bloopers, with tracked
+  changes so you review suggestions rather than have an AI quietly rewrite
+  your work. Works with a small local model if you'd rather not send your
+  writing anywhere.
+- **Importing existing manuscripts:** more tools, and more of what they
+  carry — labels, statuses, notes, metadata. Some imports need careful
+  exporting to preserve chapters and notes; that's the part I want to make
+  invisible.
 
-### Step 2 — install
+Those are goals, not promises about what already works.
 
-Run from the `lekhak` folder. This builds a private Python environment
-inside the checkout — nothing system-wide is touched.
+## Your writing stays yours
 
-**Linux / macOS** (Terminal):
+Your book is saved in ordinary files rather than locked into a proprietary
+format — you can open the folder and read it. Lekhak also makes backups and
+lets you restore earlier versions, and it asks before it deletes or
+overwrites anything. Ever.
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -e .
-```
+## Getting it running
 
-**Windows** (PowerShell or Command Prompt):
+Lekhak runs on Linux first, with Windows and macOS supported. Step-by-step
+instructions for your system are on the
+[Lekhak page at vidyut.info](https://vidyut.info/downloads/lekhak/) —
+including screenshots, if you'd like to see it before you install anything.
 
-```powershell
-py -3 -m venv .venv
-.venv\Scripts\pip install -e .
-```
+It's still an early release, so expect rough edges; the roadmap is in
+[ROADMAP.md](ROADMAP.md).
 
-### Step 3 — add a launcher
+**Lekhak is free and open source, licensed under the GPL.** Use it, modify
+it, share it. Donations are welcome but entirely optional.
 
-No root or admin rights on any platform.
-
-**Linux** — application-menu entry plus icons:
-
-```bash
-python3 scripts/install_linux.py          # --check, --uninstall
-```
-
-**Windows** — Start Menu shortcut (add `-Desktop` for the desktop too):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install_windows.ps1
-```
-
-**macOS** — builds `~/Applications/Lekhak.app` (`--remove` deletes it):
-
-```bash
-bash scripts/install_macos.sh
-```
-
-### Start it
-
-Search for **Lekhak** in your application menu, Start Menu, or Spotlight.
-From a terminal: `.venv/bin/lekhak` (Windows: `.venv\Scripts\lekhak`).
-
-Already comfortable with pipx? `pipx install .` replaces Step 2, and the
-Step 3 script finds it on your PATH.
-
-`scripts/render_icons.py` bakes `packaging/lekhak.svg` into the PNG/ICO
-artifacts; re-run it after changing the icon.
-
-## Tests
-
-```bash
-PYTHONPATH=src python -m unittest discover -s tests -v
-```
-
-## Reliability contract
-
-Content writes go to a sibling temporary file, are flushed and synced, and are
-then atomically moved into place. The database uses WAL mode. Project backups
-copy the database and document directory without changing the working project.
-
-## License
-
-GNU General Public License v3.0 or later.
+Source code: [GitHub](https://github.com/Vidyut/lekhak).
