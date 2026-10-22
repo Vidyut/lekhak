@@ -55,6 +55,33 @@ That is what was done for MiMo's half-finished Preferences refactor: the patch
 and the file are in `/tmp/opencode/mimo/`, the tree is green, and nothing was
 lost by restoring it.
 
+## Decide → script → run
+
+Once a change is decided, write it as a script that carries its own safety
+envelope, and run that:
+
+```
+back up the files it will touch
+apply the change (with assertions, so a moved anchor aborts rather than mangles)
+add or update its tests
+run the suite
+  green → commit, pull --rebase, push
+  red   → restore the backup, exit non-zero
+```
+
+Then an interruption — a provider limit, a crash, the person going to bed —
+cannot leave work half-applied or a tree red, because the script either
+finishes the job or undoes it. It also removes the conversation from the
+critical path: the decision is the only thing that needs a human, and it can
+be made long before the script runs.
+
+Tonight's record, in this order: one **abort** (the tests failed because my
+expectations were wrong, not the patch — the tree was restored untouched) and
+three **landings** (the inspector label, the outliner scope, the folder tabs).
+
+Recurring tooling belongs in `scripts/`; one-off actions live in
+`/tmp/opencode/do-*.sh` with the file they patched backed up beside them.
+
 ## Areas
 
 **Engine — opencode.** The parts that decide what an export *is*:
