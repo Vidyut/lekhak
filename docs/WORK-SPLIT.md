@@ -1,0 +1,60 @@
+# Work split: who owns what
+
+Two writers, one repository. The rules first, then the areas, then the
+to-do. Read this before editing anything.
+
+## Rules
+
+1. **`git pull --rebase origin main` before you start and before you push.**
+   A rejected push means somebody else pushed; rebase, re-run the suite, push
+   again. Never force-push.
+2. **The suite must be green before a commit lands** —
+   `PYTHONPATH=src QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests`.
+   A feature without tests is not finished.
+3. **One writer at a time in a shared file.** `src/lekhak/app.py`,
+   `README.md` and `ROADMAP.md` are shared: say so before you edit, or work
+   in a new module and let the other side wire it in.
+4. **Never overwrite someone else's uncommitted work.** If `git status`
+   shows changes you did not make, stop and ask.
+5. **No AI edits text or code except through the mechanisms the app already
+   has** (tracked changes for manuscripts; a human reviewing a diff for
+   code). Advice is welcome; commits are a human act.
+6. Small commits, one idea each, message in the repo's style
+   (`area: what changed`, from the user's point of view where possible).
+
+## Areas
+
+**Engine — opencode.** The parts that decide what an export *is*:
+
+- `src/lekhak/project.py` — storage, compile scope, export pipeline,
+  page geometry, counts, snapshots, imports' safety floor.
+- `src/lekhak/templates.py` and the new template engine modules.
+- `src/lekhak/pageview.py`, `src/lekhak/pdf.py`, `uno_pdf.py`.
+- `docs/` — every design document, including this one.
+- Release chores: tagging, the blog page, the tester round.
+
+**Interface and features — MiMo.** The parts a writer touches:
+
+- `src/lekhak/app.py` (UI wiring), and new self-contained UI modules.
+- `src/lekhak/importer.py`, `odt.py`, `uno_odt.py`, `spellcheck.py`,
+  `scrivener.py`, `ywriter.py`.
+- New feature modules and their tests (`open_recent`, `quick_open`, `print`,
+  session goal, and whatever comes next).
+- `docs/BUILD-NOW.md` as it works through the list.
+
+**Shared, serialised:** `app.py`, `README.md`, `ROADMAP.md`. When the
+template engine needs UI (the export dialog's override row, the inspector,
+the Templates area), the engine lands first with tests; then either side
+does the wiring in a single pass, announced, with the other holding off
+`app.py` until it is pushed.
+
+## To-do
+
+| # | Item | Owner | State |
+|---|---|---|---|
+| 1 | Template engine — discovery, `Type`/title/format matching, slot-driven render, DOCX config/reference/generated, per-export override, Templates area, help levels, update check (`docs/TEMPLATES.md` §9) | engine, then UI | **gated on the author's read of the spec** |
+| 2 | Print interior (no colour images, mirror+recto, separate cover PDF) and the optional cover-prep tool (`docs/PRINT.md`) | engine, then UI | trim/mirror/recto already ship; the print branch and cover do not exist |
+| 3 | Import consolidation by *format*, the Merge/Skip/Keep/Abort walkthrough, and labels/status/keywords/custom metadata (`docs/IMPORTS.md`) | importers (MiMo), floor + docs (engine) | floor ships; consolidation does not |
+| 4 | Trash with a way home; project folder seeded under the project's name | engine (move/restore API) + UI | not started |
+| 5 | All the word counts (averages, reading time, day deltas), word-frequency report, auto-linking from exact filename/metadata matches with hover previews, inline comments | UI mostly | not started |
+| 6 | Release: tag `v0.1.0`, blog page refresh (install, gift link, screenshots), tester round | engine | pending |
