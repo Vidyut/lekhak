@@ -102,6 +102,16 @@ whatever their own dropdown or text field holds — and a template named after
 that value is applied. No list of type names could ever be reserved, so none
 is.
 
+The **built-in value names** are reserved in the same sense: `Title`, `Content`,
+`ChapterNumber`, `PagesTotal` and the rest always resolve to the built-in value,
+so a metadata key cannot shadow one — it warns instead (§3.1). Two of them are
+load-bearing in a way the others are not: **the built-in default slots are
+little more than `${Title}` and `${Content}` wrapped in markup**, so if those
+names could be redefined, our defaults would die with them. That is the whole
+reason to protect them, and the whole extent of the protection: lowercase
+spellings of the same words remain the writer's, as does every other name they
+care to invent.
+
 **Matching is opportunistic; it never invents anything.** A `Type` or a
 format that matches no template falls back to the template that *is*
 applicable: `Format: pdf` with no pdf override simply uses the same template
