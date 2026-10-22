@@ -37,8 +37,10 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
+import threading
 from html import escape
 from pathlib import Path
 from uuid import uuid4
@@ -125,6 +127,52 @@ def confirm_destructive(parent, title: str, question: str, *, confirm: str,
     clicked = box.clickedButton()
     return (clicked is not None
             and box.buttonRole(clicked) == QMessageBox.DestructiveRole)
+
+
+def _desktop_opener(path: Path) -> list[str]:
+    """The command that hands a file to the desktop's own handler.
+
+    ``xdg-open`` first (it waits for the viewer it starts on most
+    desktops); ``gio open`` is GNOME's equivalent.
+    """
+    found = shutil.which("xdg-open")
+    if found:
+        return [found]
+    found = shutil.which("gio")
+    if found:
+        return [found, "open"]
+    raise RuntimeError(
+        "No desktop handler found (install xdg-utils, or gio)."
+    )
+
+
+def print_via_desktop(path: Path, command: list[str] | None = None):
+    """Open the PDF in the system print flow, then remove the temp folder.
+
+    The handler *is* the print flow — the PDF viewer's own print dialog —
+    and it must be free to read the file for as long as it likes, so the
+    folder dies when the handler's process exits and not a moment before.
+    The waiter runs on a daemon thread: quitting Lekhak never leaves the
+    writer waiting on a viewer to close.
+    """
+    folder = path.parent
+    if command is None:
+        command = _desktop_opener(path)
+    try:
+        process = subprocess.Popen(command + [str(path)])
+    except BaseException:
+        # The handler never started: nothing can read the file now.
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+
+    def _clean_when_done() -> None:
+        try:
+            process.wait()
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+
+    threading.Thread(target=_clean_when_done, daemon=True).start()
+    return process
 
 
 class FindReplaceDialog(QDialog):
@@ -2431,6 +2479,8 @@ class MainWindow(QMainWindow):
         self.quick_open_action = self._action(
             file_menu, "&Quick Open…", QKeySequence("Ctrl+Shift+P"),
             self.quick_open)
+        self.print_action = self._action(
+            file_menu, "&Print…", QKeySequence.Print, self.print_manuscript)
         self._action(file_menu, "&Save and Back Up", QKeySequence.Save, self.manual_save)
         self._action(file_menu, "Choose Backup Folder…", None, self.choose_backup_folder)
         file_menu.addSeparator()
@@ -2535,6 +2585,7 @@ class MainWindow(QMainWindow):
 
     def _set_project_enabled(self, enabled: bool) -> None:
         self.quick_open_action.setEnabled(enabled)
+        self.print_action.setEnabled(enabled)
         self.tree.setEnabled(enabled)
         self.editor.setEnabled(enabled)
         self.page_view.setEnabled(enabled)
@@ -2565,6 +2616,36 @@ class MainWindow(QMainWindow):
             self._switch_project(project)
         except Exception as error:
             QMessageBox.critical(self, "Could not create project", str(error))
+
+    def print_manuscript(self) -> None:
+        """BUILD-NOW 4: print through the PDF path the export already uses.
+
+        No save dialog and no template dialog: the stored template set
+        decides pagination — the same numbers an export would produce —
+        and the scope is whatever the export would take (a binder or
+        outliner selection, else the whole project). The PDF is built in
+        a temp folder that print_via_desktop removes once the handler
+        exits; every failure path removes it immediately.
+        """
+        if not self.project:
+            self.statusBar().showMessage("Open a project first", 3000)
+            return
+        if not self.save_current():
+            return                      # the dialog has explained
+        raw_ids = self._gather_export_selection()
+        sets = discover_template_sets(self.project.root)
+        wanted = self.project.get_setting("template_set", "default")
+        templates = next((t for t in sets if t.name == wanted), sets[0])
+        folder = Path(tempfile.mkdtemp(prefix="lekhak-print-"))
+        target = folder / "lekhak-print.pdf"
+        try:
+            pdf.export_pdf(self.project, target, raw_ids, templates)
+            print_via_desktop(target)
+        except Exception as error:
+            shutil.rmtree(folder, ignore_errors=True)
+            QMessageBox.critical(self, "Print failed", str(error))
+            return
+        self.statusBar().showMessage("Handed to the system print flow", 5000)
 
     def quick_open(self) -> None:
         """BUILD-NOW 2: jump to a document by title.

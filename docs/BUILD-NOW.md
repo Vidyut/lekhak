@@ -90,6 +90,15 @@ afterwards.
 *Acceptance:* printing a short story opens the system print flow with the
 same pagination the export produces; the temp file does not survive.
 
+**Built (2026-10-22).** `print_manuscript` compiles the PDF straight into a
+`lekhak-print-*` temp folder — stored template set, export scope, no
+dialogs — and hands it to `xdg-open` (or `gio open`); a daemon waiter
+deletes the folder when the handler's process exits, so the viewer may
+read the file as long as it likes and nothing is left behind. Every
+failure path (no project, cancelled save, conversion error, handler that
+never starts) removes the folder immediately. Seven tests in
+`tests/test_print.py`. Suite 484, exit 0.
+
 ## 5. Insert date/time
 An editor command inserting the date (and optionally the time) at the caret;
 feeds the metadata `Date` value rather than being typed by hand.
