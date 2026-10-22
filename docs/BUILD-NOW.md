@@ -73,8 +73,15 @@ Ten tests in `tests/test_quick_open.py`. Suite 475, exit 0.
 ## 3. Selection word count
 The status bar already recomputes on cursor moves — add "N words selected"
 when there is a selection.
-*Acceptance:* selecting a paragraph shows its count; deselecting restores
-the document count.
+*Acceptance:* selecting a paragraph shows its count; deselecting restores the
+document count.
+
+**Built (2026-10-22).** The display already existed (it arrived with the
+outliner columns); what was missing was the deselect half and any test.
+`selectionChanged` now refreshes the status bar as well as
+`cursorPositionChanged` — clearing a selection can leave the position
+where it was, so moves alone missed it. Two acceptance tests in
+`tests/test_selection_count.py`. Suite 477, exit 0.
 
 ## 4. Print — `Ctrl+P`
 Reuse the PDF path (1.6/1.7): write the PDF to a temp file, hand it to the

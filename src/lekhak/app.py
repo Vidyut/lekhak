@@ -2178,6 +2178,9 @@ class MainWindow(QMainWindow):
         self.editor.setPlaceholderText("Start writing…")
         self.editor.textChanged.connect(self._content_changed)
         self.editor.cursorPositionChanged.connect(self._update_word_count)
+        # Clearing a selection can leave the position where it was, so
+        # cursor moves alone don't refresh the "N selected" count (3).
+        self.editor.selectionChanged.connect(self._update_word_count)
         self.editor.internal_link_clicked.connect(self._link_clicked)
         # Qt's own right-click menu, extended with the style commands (1.11).
         self.editor.setContextMenuPolicy(Qt.CustomContextMenu)
