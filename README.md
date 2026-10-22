@@ -9,6 +9,10 @@ to add features other writers might find useful and release it for everyone.
 
 The idea is simple: **just write.**
 
+*If Lekhak earns a place in your writing life, you're welcome to
+[send a gift](https://paypal.me/VidyutG) — entirely optional, and the
+software is free and open source either way.*
+
 Organise your book into chapters, scenes, notes, folders, or whatever makes
 sense to you. Write in a comfortable editor, keep track of your progress,
 rearrange things as needed, and export when you're ready.
@@ -144,6 +148,8 @@ It's still an early release, so expect rough edges; the roadmap is in
 [ROADMAP.md](ROADMAP.md).
 
 **Lekhak is free and open source, licensed under the GPL.** Use it, modify
-it, share it. Donations are welcome but entirely optional.
+it, share it. If you'd like to say thank you,
+[send a gift](https://paypal.me/VidyutG) — optional, and it stays free either
+way.
 
 Source code: [GitHub](https://github.com/Vidyut/lekhak).
