@@ -1,59 +1,87 @@
-# Feature comparison and easy wins
+# Feature decisions
 
-Written while the author slept (2026-10-21) so there is a list to react to,
-not a pile of half-built features. Each row says who else has it, where we
-stand, and how big it really is.
+What we build, what we don't, and why. Decide first, then build — this file
+is the record so nobody has to argue it twice.
 
-## What other writing software does, and where we stand
+**The test a feature has to pass:** it must make writing *faster or safer*.
+Performance, not ambiance. Word counts are pacing tools and therefore core;
+anything purely decorative has to justify itself or go.
 
-| Feature | Who has it | Ours | Effort |
-|---|---|---|---|
-| Binder + corkboard + outliner | Scrivener, Manuskript | ✅ all three | — |
-| Snapshots / versions | Scrivener, Ulysses | ✅ per document, plus full-project backups | — |
-| Project-wide search & replace | Scrivener, Word | ✅ with preview, regex, per-document snapshots | — |
-| Tracked changes, accept/reject | Word, Scrivener (revisions) | ✅ with revision passes | — |
-| Distraction-free / focus mode | FocusWriter, ghostwriter, Ulysses | ✅ F11, hides chrome | — |
-| Typewriter scrolling | FocusWriter, ghostwriter, Ulysses | ❌ | medium |
-| Themes (dark/light/sepia) | every one of them | ❌ (interface font only) | medium |
-| **Recent projects** | all | ❌ | **small** |
-| **Quick-open a document** (Ctrl+P, fuzzy) | Ulysses, Obsidian, VS Code | ❌ (binder click or Ctrl+Shift+F only) | **small** |
-| **Selection word count** | Word, Scrivener | ❌ (document count only) | **small** |
-| **Session/daily word goal** | Ulysses, Scrivener (target per session) | partial (per-section targets) | **small** |
-| **Insert date/time** | Scrivener, Word | ❌ | **small** |
-| **Print (Ctrl+P)** | all | export→PDF then print externally | **small** (reuse the PDF path) |
-| Text-to-speech | Scrivener (macOS), Word | ✅ 3.1 | — |
-| AI continuation/proofreading | Scrivener (macOS), Ulysses | ✅ tracked, never direct writes | — |
-| Compile/export with templates | Scrivener, Word styles | 🚧 Phase 1 landed; templates next | large |
-| Import from other tools | Scrivener, Word | ✅ Scrivener/dump/yWriter/markdown, collision-safe — but **no DOCX/ODT manuscript import**, which is the one everybody will try first | medium (python-docx reads styles; ODT via the UNO we already drive for PDF) |
-| Trash / undelete | Scrivener, Ulysses | ❌ (delete is confirmed + backups exist) | medium |
-| Character/place sheets | Scrivener, novel-writing tools | ❌ (metadata + related files approximate it) | medium |
-| Word-frequency / repetition report | Scrivener, ProWritingAid | ❌ | medium |
-| Inline comments/annotations | Word, Scrivener | partial (notes as documents; tracked changes) | medium |
-| Cloud sync / collaboration | Google Docs, Ulysses | deliberate non-goal (local-first, no telemetry) | — |
+## Decided: building
 
-## The easy batch (recommended next, in this order)
+- **All the word counts.** Not one number — every number a pacing writer
+  wants: document count, selection count, chapter and folder rollups, project
+  total, per-scene, average scene length, progress against a target, the
+  session's delta, and reading time. If a count can be derived honestly, it
+  gets shown. (Per-section targets and rollups exist; the rest is UI on data
+  we already have.)
+- **Word goals.** Small effort, widely wanted, even though the author does
+  not use them himself.
+- **Recent documents.** Needed; there is no substitute for it.
+- **Current date / current time** — named exactly that, so it is never
+  confused with a *Date* metadata field on a document.
+- **Word frequency / repetition report.** Cheap, and exactly the kind of
+  editing feedback a pacing writer uses.
+- **Trash, with a way home.** Delete moves the document to a Trash top-level
+  folder instead of unlinking it. It remembers where it came from and offers
+  "put it back" — like a file manager. Drag and drop wherever you like.
+  Writers are attached to their words; letting them visit the afterlife is
+  cheap goodwill.
+- **Worldbuilding as a first-class top level.** Characters, places, magic
+  systems, languages: folders, not a special object type — a character sheet
+  is just a folder with a synopsis and metadata. Four top levels, then:
+  **Manuscript, Worldbuilding, Templates, Trash.**
+- **Auto-linking from filenames.** If a metadata value *exactly* matches a
+  document title, it links to it. Instances of a document's title inside the
+  text become links too, auto-listed in the sidebar for the document you are
+  in; **hover shows the beginning of the target document as a popup**, click
+  goes there. (The link machinery and the related-files scan already exist —
+  this is presentation on top of them.)
+- **Inline comments / annotations**, if it does not turn into a project of
+  its own. Tracked changes and notes-as-documents cover part of it today.
+- **Importers by format, plus the obvious gaps** — DOCX and ODT. See
+  `docs/IMPORTS.md`: a markdown export from Scrivener is markdown, not a
+  Scrivener file, and should not have its own code path.
+- **Cloud sync and secure cloud backup**, as *options*. See below.
 
-1. **Recent projects** — `File → Open Recent`, remembered in `QSettings`,
-   capped at eight, pruned when a project moves. Standard, expected, and it
-   removes the only clumsy step in the daily loop.
-2. **Quick open** (`Ctrl+P`) — a one-field palette over document titles
-   (binder order, fuzzy-ish match), and it already has a cousin in
-   `Find in Project`. Authors jump between scenes constantly; the binder is a
-   long walk for a specific one.
-3. **Selection word count** — the status bar already recomputes on cursor
-   moves; add "12 words selected" when there is a selection. Writers watching
-   a scene budget ask for this within a week.
-4. **Print** (`Ctrl+P`) — write the same PDF the export produces into a temp
-   file and hand it to the desktop's print dialog. All the hard parts exist.
-5. **Insert date/time** — a small editor command, useful in journals and
-   dated notes; also feeds the metadata `Date` key rather than typing it.
-6. **Session goal** — a per-day word target beside the existing per-section
-   targets, with progress in the status bar.
+## Decided: not building
 
-## Deliberately not doing
+- **Typewriter scrolling.** Ambiance. We are efficiency-obsessed; the code
+  should deliver performance, not a mood.
+- **Themes.** Whatever the desktop or system provides is what renders. Not
+  our business unless somebody says "I can't read this" — and then it is an
+  accessibility fix, not a theme engine.
+- **Markdown-first editing.** Most writers do not know markdown, and HTML
+  gives us better formatting options. Markdown stays an import and export
+  format, which is where it is genuinely useful.
 
-Cloud sync, accounts, telemetry, collaboration: this is a local-first tool
-whose value is that the manuscript is a directory of plain files you own.
-Also not doing a Markdown-first editing model — the rich-text editor with
-sanitised paste is the point, and the exporters already cover the formats
-people need.
+## Settled properly: local vs hosted, and the cloud
+
+There is no "local-first rule" and no opinion about what anyone else should
+do. The position is:
+
+- **Hosted APIs are the capable option** and local Ollama is the modest,
+  inferior one — that is what the evidence says.
+- **Local is offered because some authors are twitchy about feeding
+  unpublished work to a model.** That is a legitimate reason to accept a
+  worse tool, not a philosophy.
+- **Secure cloud backup or sync is welcome** if it can be done safely and
+  opt-in — a dead laptop is the single largest risk to a manuscript, and no
+  amount of local purity fixes it.
+- Nobody's choice is judged either way.
+
+## Open, needing discussion
+
+- **Quick open (`Ctrl+P`).** The question asked was whether it differs from
+  clicking a title in the binder. Clicking *selects and shows*; quick open
+  *finds*. In a 300-document binder the difference is twenty seconds of
+  scrolling versus three letters — but it is only worth building if the
+  binder feels slow in practice.
+- Import UI wording and flow (see `docs/IMPORTS.md`).
+
+## Ceiling note
+
+The AI-facing features scale with the model behind them: a small local one
+fixes bloopers, a good API is genuinely useful for prose. Everything that
+depends on a model should be built so it degrades honestly instead of
+pretending.

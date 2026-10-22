@@ -70,6 +70,28 @@ walkthrough (above) is in play. Asking once is the bulk-command behaviour the
 author asked for; the prompt lists the colliding names so the answer is
 informed.
 
+## Imports are by *format*, not by source application
+
+The current menu is organised by where a file came from, which is the wrong
+axis: Scrivener's markdown export is markdown, not a Scrivener file, and
+neither Scrivener nor yWriter owns it by the time we see it. Organise by what
+the file *is*:
+
+| The file you have | What we do |
+|---|---|
+| Markdown (with dividers you name) | one importer, with the divider strings in the dialog — a Scrivener dump is this, with its own divider defaults offered as a preset |
+| HTML | one importer (a Scrivener/yWriter HTML export is this) |
+| **DOCX** | new — `python-docx` reads paragraphs and heading styles |
+| **ODT** | new — via the LibreOffice UNO path we already drive for PDF (1.6) |
+| A Scrivener project folder (`.scriv`) | its own importer, because it really is a format |
+| A yWriter project (`.yw7`) | its own importer, because it really is a format |
+
+The dialog should say so plainly: *choose a file, we work out what it is* —
+and where a format can be ambiguous (markdown, HTML), the divider/title
+settings are the only questions asked. Separate importers for markdown that
+happened to come from a particular program are one code path pretending to be
+several.
+
 ## What ships first (safety floor)
 
 Until the walkthrough exists, the floor is: imports never overwrite, never
