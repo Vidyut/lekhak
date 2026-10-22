@@ -94,6 +94,41 @@ genuinely good results from the same code.
 A dictionary plus a tiny model is a better deal than either alone, and the
 dictionary half costs nothing in trust.
 
+## Chunking is our job, not the writer's
+
+For a small model, never hand the writer a whole chapter and hope: feed it a
+paragraph at a time, or three or four sentences where paragraphs are long,
+**sequentially**, and assemble the result as tracked changes. We know small
+models degrade past a short context — so asking the user to judge the right
+size is asking them to know something we already know. Idiotproof where it
+can be.
+
+## One button, and a prompt behind a fold
+
+The everyday path is a single action — *Proofread this* — whose prompt is
+ours (typos, spelling, grammar, doubled words and lines, stray spaces,
+punctuation), not a form to fill in. The prompt lives in a **collapsible
+section, editable, with a strong note: do not change this unless you know
+the eccentricities of small models.** Experienced users can tune it; nobody
+has to.
+
+## Dictionaries, jargon, and what the model is for
+
+A spell dictionary helps, but writers ignore red squiggles once worldbuilding
+names light up the whole page — blindness, not vigilance. Models tend to
+*remember* invented words, which is why the grammar pass earns its keep. A
+useful future step: have the model extract entities (character, place, term)
+and feed them both to the dictionary and to later prompts. Expect tuning —
+this is trial and error, and the ceiling scales with the model: a small local
+one fixes bloopers; a good API fixes prose.
+
+## No AI writes anything
+
+Two rules, both absolute. **No AI edits the manuscript** except through
+tracked changes the writer accepts (structural, 2.4). **No AI edits Lekhak's
+own code** — not a local model, not a hosted one, however capable. Advice is
+welcome; commits are a human act.
+
 ## Warning text to show in Preferences
 
 > **Local models are small.** The one that fits on almost any computer is a
