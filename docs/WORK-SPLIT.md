@@ -69,6 +69,18 @@ run the suite
   red   → restore the backup, exit non-zero
 ```
 
+**Capture the suite's status; never pipe it.** `python -m unittest … | tail`
+reports *tail's* success, so a red suite sails through the envelope and gets
+committed and pushed — which happened once (commit `cc98373`, fixed on top by
+`a539903`). Write the output to a file, keep `$?`, then show the tail:
+
+```bash
+.venv/bin/python -m unittest discover -s tests > /tmp/suite.log 2>&1
+status=$?
+tail -4 /tmp/suite.log
+[ "$status" -eq 0 ] || { restore; exit 1; }
+```
+
 Then an interruption — a provider limit, a crash, the person going to bed —
 cannot leave work half-applied or a tree red, because the script either
 finishes the job or undoes it. It also removes the conversation from the
