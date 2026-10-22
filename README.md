@@ -143,22 +143,6 @@ Content writes go to a sibling temporary file, are flushed and synced, and are
 then atomically moved into place. The database uses WAL mode. Project backups
 copy the database and document directory without changing the working project.
 
-## Trying this build (testers)
-
-If you are here to test rather than to write, the most valuable thing you can
-try first is the **Scrivener import**: `File → Import Scrivener Project…`,
-pointed at a `.scriv` package, then compare against Scrivener itself —
-structure, word counts, bold and italic, synopses.
-[`docs/SCRIVENER-IMPORT.md`](docs/SCRIVENER-IMPORT.md) states exactly what
-crosses over, what deliberately does not, and how to report a difference.
-
-Also worth a look: the exports (DOCX, PDF, EPUB), the editor zoom
-(`Ctrl`+scroll), and the safety behaviour — a failed save never discards your
-text, and deleting or overwriting always asks with a checkbox.
-
-The bugs that matter most are the ones where text is lost, a word count
-changes, or something is overwritten. Those reports are worth their weight.
-
 ## License
 
 GNU General Public License v3.0 or later.
