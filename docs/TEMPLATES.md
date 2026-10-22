@@ -507,6 +507,33 @@ channel.
    (`Type` matching is no longer reserved — it ships with phase 3; only its
    values, and every other metadata vocabulary, belong to the writer.)
 
+---
+
+### The trim lives in the template (author's direction, 2026-10-21)
+
+Paper size and margins belong in the **template**, not set by hand per book. A
+dropped-in KDP template, or a downloaded free book template, already knows its
+trim — so "produce a print-ready book" becomes "drop in the template and
+export", which is the whole point of §3's config and reference-DOCX forms.
+
+The per-book Page setup (1.15) stays, as the **exception**: the one book that
+needs different paper without swapping templates. It remains folder-only
+(`docs/UI-NOTES.md` 7), which is what stops a book from acquiring mixed paper
+sizes.
+
+**Resolution order for the geometry, most specific first:**
+
+1. the nearest ancestor folder's Page setup — an explicit decision about *this*
+   book;
+2. the template's own page size and margins — the `docx/` config's `Page size`
+   and `Margins` lines, or the reference DOCX's own page setup;
+3. the A4 baseline (§4).
+
+So: a writer who configures nothing gets A4; a writer who drops in a trim
+template gets that trim without touching page setup; a book that must differ
+overrides once, at its folder. Nobody is asked to know how books are
+formatted in order to get one formatted.
+
 ## 10. Open, small
 
 - Text export pagination: **settled 2026-10-22 — no form feeds.** Text
