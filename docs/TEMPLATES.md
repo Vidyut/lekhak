@@ -318,7 +318,7 @@ HTML escaping applies to expanded values, as in a slot.
 | `${Content}` | the unit's prose (raw, not escaped) |
 | `${Children}`, `${Entries}` | nested units / TOC entries (raw) |
 | `${ChapterNumber}`, `${SceneNumber}`, `${WordsTotal}` | counters; template and heading pages never take numbers (2.1) |
-| `${Metadata.Key}` | any metadata key, resolved as below |
+| `${Anything}` | built-in values first, then any metadata key — see *one namespace* below; `${Metadata.Key}` still works as the explicit spelling |
 | `${Parent}` | the immediate container's title |
 | `${Book}` | PROPOSED: the nearest ancestor that is "the book being dressed" — a folder with a page setup or a template association; failing that, the export's title-page container |
 | `${Format}` | the format being written (`docx`, `pdf`, `epub`, `html`, `text`) — the value that makes `$if(Format = docx)` possible, so a small difference never needs a second template |
@@ -332,6 +332,20 @@ deliberately shows the chapter's or the book's value rather than blanking it.
 This is what makes `${Metadata.Author}` in a scene's page footer, or
 `${Metadata.Status}` on a single scene, work without repeating anything:
 folder metadata is metadata for everything inside the folder.
+
+**One namespace (author's direction, 2026-10-21).** There is no `Metadata.`
+tier to remember. A placeholder is matched against the built-in values first
+and the resolved metadata second, so `${Author}`, `${Status}` and `${PoV}` work
+exactly like `${Title}` — and `${Metadata.Author}` keeps working, because it is
+what existing templates already say. Conditionals read the same namespace, so
+`$if(Status = Final)` replaces `$if(Metadata.Status = Final)`.
+
+Implementation is a *flattening*, not new syntax: each resolved metadata entry
+is published under both its own name and its `Metadata.` alias, so the parser
+never learns a second rule. One guard: a metadata key that collides with a
+built-in — a key literally called `Title` — is a configuration error to warn
+about when a template is saved. Built-ins win, and the warning says so rather
+than leaving a silent shadow.
 
 **Application-level metadata (Preferences).** A key/value list in
 Preferences applies to every export of every project: set `Author = …` once
