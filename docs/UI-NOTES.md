@@ -81,6 +81,28 @@ document's own count, so a goal set on a folder reads 0% over a subtree. Either
 make folders use the rollup (it exists) or say plainly that goals are for
 scenes and chapters.
 
+## 6. Where does the page size live? — say it where it matters
+
+The **Page setup** control sits on the book folder in the inspector, which is
+the right home and a terrible secret: a writer with a scene open sees no way to
+change the paper, and nothing on the Page tab says where the setting lives.
+The author's verdict: *"I don't see a clear route for the user to understand
+what to do."* Four small fixes:
+
+- **A "?" on the Page setup button**: what it does, that the nearest ancestor
+  folder wins, and that clearing it returns to the built-in default.
+- **The Page tab names its fallback as a fallback** — *"A4 (default — set Page
+  setup on the book folder)"* — so an unconfigured preview is honest about
+  being undecided rather than looking like a choice the writer made.
+- **Two clearer tab labels** — *Editor* and *Page preview* — because the
+  author of the software had to ask what the difference was.
+- **The general rule, which is the point: from the consequence to the
+  setting.** Whenever the app shows the *result* of a setting, it says where
+  that setting lives. A page count, a template name, a cover, a trim, a
+  word-count goal — each should be one hover away from the control that
+  changes it. Most of the confusion in this project has been of that shape:
+  the value is visible, the lever is elsewhere.
+
 **Assigned to the interface side** (`docs/WORK-SPLIT.md`): Preferences
 rebuild, the three items above it, and this rename, while the engine side
 keeps working on the template spec and the print interior.
