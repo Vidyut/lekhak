@@ -186,6 +186,88 @@ class FindReplaceDialog(QDialog):
         QMessageBox.information(self, "Replace All", f"Replaced {count} occurrence(s).")
 
 
+class QuickOpenDialog(QDialog):
+    """BUILD-NOW 2: one field over the binder's titles — navigate only.
+
+    Substring matches come first, subsequence matches behind them, both in
+    binder order, so the obvious title is the highlight the moment you
+    type it. Enter jumps, Esc closes, and there is no editing surface
+    anywhere in the dialog: it cannot touch the manuscript.
+    """
+
+    def __init__(self, entries: list[tuple[str, str]], parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Quick Open")
+        self.chosen_id: str | None = None
+        self._entries = entries
+        layout = QVBoxLayout(self)
+        self.edit = QLineEdit()
+        self.edit.setPlaceholderText("Title — Enter to jump, Esc to close")
+        self.edit.setClearButtonEnabled(True)
+        self.edit.installEventFilter(self)
+        self.results = QListWidget()
+        self.results.setAlternatingRowColors(True)
+        layout.addWidget(self.edit)
+        layout.addWidget(self.results)
+        self.edit.textChanged.connect(self._refill)
+        self.edit.returnPressed.connect(self._accept_current)
+        self.results.itemActivated.connect(self._activate)
+        self._refill("")
+        self.resize(520, 380)
+
+    @staticmethod
+    def _matches(entries: list[tuple[str, str]], text: str) -> list[tuple[str, str]]:
+        needle = text.strip().lower()
+        if not needle:
+            return list(entries)
+        substrings = [e for e in entries if needle in e[1].lower()]
+        placed = {e[0] for e in substrings}
+        fuzzy = [
+            e for e in entries
+            if e[0] not in placed
+            and QuickOpenDialog._subsequence(needle, e[1].lower())
+        ]
+        return substrings + fuzzy
+
+    @staticmethod
+    def _subsequence(needle: str, haystack: str) -> bool:
+        """Every needle character in order, gaps allowed — a typo-tolerant
+        fallback that can never outrank a real substring hit."""
+        remaining = iter(haystack)
+        return all(char in remaining for char in needle)
+
+    def _refill(self, text: str) -> None:
+        self.results.clear()
+        for document_id, title in self._matches(self._entries, text):
+            item = QListWidgetItem(title)
+            item.setData(Qt.UserRole, document_id)
+            self.results.addItem(item)
+        if self.results.count():
+            self.results.setCurrentRow(0)
+
+    def _accept_current(self) -> None:
+        item = self.results.currentItem()
+        if item is not None:
+            self._activate(item)
+
+    def _activate(self, item: QListWidgetItem) -> None:
+        self.chosen_id = item.data(Qt.UserRole)
+        self.accept()
+
+    def eventFilter(self, obj, event):
+        # Up/Down from the text field walk the list — the caret has no
+        # purpose there, and reaching for the mouse would defeat the point.
+        if obj is self.edit and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+                step = 1 if event.key() == Qt.Key.Key_Down else -1
+                last = self.results.count() - 1
+                if last >= 0:
+                    row = self.results.currentRow()
+                    self.results.setCurrentRow(max(0, min(last, row + step)))
+                return True
+        return super().eventFilter(obj, event)
+
+
 class ProjectReplaceDialog(QDialog):
     def __init__(self, project: Project, on_goto=None, parent=None) -> None:
         super().__init__(parent)
@@ -2341,6 +2423,11 @@ class MainWindow(QMainWindow):
         # on disk between two openings never offers a broken entry.
         self.recent_menu = file_menu.addMenu("Open &Recent")
         self.recent_menu.aboutToShow.connect(self._populate_recent_menu)
+        # Ctrl+P stays with Print (item 4): the two BUILD-NOW items asked
+        # for the same key, and Print is the one every other program owns.
+        self.quick_open_action = self._action(
+            file_menu, "&Quick Open…", QKeySequence("Ctrl+Shift+P"),
+            self.quick_open)
         self._action(file_menu, "&Save and Back Up", QKeySequence.Save, self.manual_save)
         self._action(file_menu, "Choose Backup Folder…", None, self.choose_backup_folder)
         file_menu.addSeparator()
@@ -2444,6 +2531,7 @@ class MainWindow(QMainWindow):
         return action
 
     def _set_project_enabled(self, enabled: bool) -> None:
+        self.quick_open_action.setEnabled(enabled)
         self.tree.setEnabled(enabled)
         self.editor.setEnabled(enabled)
         self.page_view.setEnabled(enabled)
@@ -2474,6 +2562,38 @@ class MainWindow(QMainWindow):
             self._switch_project(project)
         except Exception as error:
             QMessageBox.critical(self, "Could not create project", str(error))
+
+    def quick_open(self) -> None:
+        """BUILD-NOW 2: jump to a document by title.
+
+        Navigate only — the palette selects and nothing else. With no
+        project open there is no binder to search and no palette to show.
+        """
+        if not self.project:
+            self.statusBar().showMessage("Open a project first", 3000)
+            return
+        entries = [(d.id, d.title) for d in self.project.documents()]
+        dialog = QuickOpenDialog(entries, self)
+        if not dialog.exec() or not dialog.chosen_id:
+            return
+        self._jump_to(dialog.chosen_id)
+
+    def _jump_to(self, document_id: str) -> None:
+        """Land on the target: binder selection, then the view it lives in.
+
+        A document brings the editor forward (whatever tab was showing);
+        a folder lets the folder-view logic take over, so a corkboard
+        lover stays on the corkboard.
+        """
+        self._select_document(document_id)
+        document = next(
+            (d for d in self.project.documents() if d.id == document_id), None
+        )
+        if document is not None and document.kind != "folder":
+            self.views.setCurrentWidget(self.editor_page)
+            self.editor.setFocus()
+        else:
+            self.views.currentWidget().setFocus()
 
     def open_project(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Open .lekhak project")

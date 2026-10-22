@@ -56,6 +56,20 @@ deletes.
 *Acceptance:* typing three letters of a scene name jumps to it from anywhere;
 the palette never appears with no project open.
 
+**Built (2026-10-22).** `QuickOpenDialog`: one field, list below, substring
+matches first then subsequence matches, binder order inside each group;
+Enter activates the highlight, Up/Down walk from the text field, Esc
+closes, and the dialog has no editing surface at all. Jumps select the
+binder item and bring the Editor forward for documents (folders stay with
+the folder-view choice); with no project the palette never appears and the
+action is disabled with the rest of the project chrome.
+
+*Shortcut deviation:* the spec gave **both** this and Print `Ctrl+P`.
+Print keeps `Ctrl+P` (every other program owns it); Quick Open takes
+`Ctrl+Shift+P`. One line each if it should be the other way round.
+
+Ten tests in `tests/test_quick_open.py`. Suite 475, exit 0.
+
 ## 3. Selection word count
 The status bar already recomputes on cursor moves — add "N words selected"
 when there is a selection.
