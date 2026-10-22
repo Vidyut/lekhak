@@ -509,30 +509,35 @@ channel.
 
 ---
 
-### The trim lives in the template (author's direction, 2026-10-21)
+### The trim lives in the template — and only there (author's direction, 2026-10-21)
 
-Paper size and margins belong in the **template**, not set by hand per book. A
-dropped-in KDP template, or a downloaded free book template, already knows its
-trim — so "produce a print-ready book" becomes "drop in the template and
-export", which is the whole point of §3's config and reference-DOCX forms.
+Page size and margins are a **template** concern and nothing else. A dropped-in
+KDP template or a downloaded free book template already carries its trim, so
+"produce a print-ready book" is "drop in the template and export". There is no
+per-book paper setting to hunt for and no cascade of fallbacks to reason about
+— the author's warning, verbatim: *"Or you'll end up with too much conditional
+stuff."*
 
-The per-book Page setup (1.15) stays, as the **exception**: the one book that
-needs different paper without swapping templates. It remains folder-only
-(`docs/UI-NOTES.md` 7), which is what stops a book from acquiring mixed paper
-sizes.
+- **With a template:** its page size and margins apply — the `docx/` config's
+  `Page size` and `Margins` lines, or the reference DOCX's own page setup.
+- **Without one:** the A4 baseline (§4).
 
-**Resolution order for the geometry, most specific first:**
+That is the whole rule. A book that needs different paper uses a different
+template.
 
-1. the nearest ancestor folder's Page setup — an explicit decision about *this*
-   book;
-2. the template's own page size and margins — the `docx/` config's `Page size`
-   and `Margins` lines, or the reference DOCX's own page setup;
-3. the A4 baseline (§4).
+**One source, not a cascade.** This is the third time this design has shed a
+layer: per-document, then per-folder-with-inheritance, then template *plus*
+per-book override, and now template alone. Each round removed a rule the writer
+would have had to know. Where a choice can live in one place, that is where it
+goes.
 
-So: a writer who configures nothing gets A4; a writer who drops in a trim
-template gets that trim without touching page setup; a book that must differ
-overrides once, at its folder. Nobody is asked to know how books are
-formatted in order to get one formatted.
+**Safeguards are deliberate, not accidental.** Word will happily let a document
+carry several page styles, so mixed paper inside one file is *possible*; if
+somebody builds that on purpose, that is their headache — the author's words,
+and the right call. What the app owes is that nobody arrives there by accident:
+hence the folder-only guard for the low-level override (1.15's mechanism, kept
+but no longer a route we advertise, `docs/UI-NOTES.md` 7) and the export
+warning when a selection spans books with different trims.
 
 ## 10. Open, small
 
