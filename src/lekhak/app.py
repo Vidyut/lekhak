@@ -2189,6 +2189,10 @@ class MainWindow(QMainWindow):
         self.focus_mode = False
         self.zoom = 1.0            # display-only; see ZOOM_ANCHOR_PT
         self._project_total = 0
+        # Session goal (BUILD-NOW 6): the project total when this
+        # session opened — the baseline for the "+N this session" delta
+        # shown beside the daily goal.
+        self._session_start_total = 0
         # Display-lifted templates roots (2.1): shown at the bottom of
         # the binder's top level while their storage parent stays put.
         self._lifted_roots: set[str] = set()
@@ -2459,6 +2463,12 @@ class MainWindow(QMainWindow):
         self.format_bar.addWidget(self.zoom_label)
 
         self.setStatusBar(QStatusBar())
+        # Word counts and goal progress ride a permanent widget (BUILD-NOW
+        # 6). A showMessage would be displaced by the next "Saved" notice
+        # and, once its timeout ran out, QStatusBar clears to nothing —
+        # the daily goal has to stay readable while other messages pass.
+        self.word_count_label = QLabel("")
+        self.statusBar().addPermanentWidget(self.word_count_label)
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
         self.save_timer.setInterval(700)
@@ -2567,6 +2577,9 @@ class MainWindow(QMainWindow):
         self._action(document_menu, "Create Snapshot…", None, self.create_snapshot)
         self._action(document_menu, "Restore Snapshot…", None, self.restore_snapshot)
         self._action(document_menu, "Link to Section…", "Ctrl+L", self._link_section)
+        document_menu.addSeparator()
+        self.set_daily_goal_action = self._action(
+            document_menu, "Set Daily Goal…", "Ctrl+G", self.set_session_goal)
 
         # Read aloud (3.1): selection, else the whole scene, through
         # Qt's QTextToSpeech; the voice and rate live in Preferences.
@@ -2595,6 +2608,7 @@ class MainWindow(QMainWindow):
     def _set_project_enabled(self, enabled: bool) -> None:
         self.quick_open_action.setEnabled(enabled)
         self.print_action.setEnabled(enabled)
+        self.set_daily_goal_action.setEnabled(enabled)
         self.tree.setEnabled(enabled)
         self.editor.setEnabled(enabled)
         self.page_view.setEnabled(enabled)
@@ -2836,6 +2850,11 @@ class MainWindow(QMainWindow):
         # Open Recent: written only here — at the tail, so a switch that
         # failed its save (early return above) records nothing.
         self._record_recent(str(project.root))
+        # Session goal (6): fresh baseline for "+N this session", then
+        # redraw so the label carries this project's numbers rather than
+        # the ones gathered while the switch was still in flight.
+        self._session_start_total = self._project_total
+        self._update_word_count()
 
     def _restore_cursor(self) -> None:
         """Session resume (1.9): put the caret back where the last save left it.
@@ -3847,6 +3866,9 @@ class MainWindow(QMainWindow):
             )
             self.statusBar().showMessage("Saved", 1500)
             self._refresh_outliner()
+            # Counts follow the just-saved totals (6): the label is
+            # permanent, so this leaves the "Saved" notice alone.
+            self._update_word_count()
         except Exception as error:
             QMessageBox.critical(self, "Save failed", str(error))
             return False
@@ -4924,11 +4946,81 @@ class MainWindow(QMainWindow):
             parts.append(f"{selected:,} selected")
         if self._project_total:
             parts.append(f"{self._project_total:,} in project")
+        # Daily goal (6): progress toward today's target, plus how far
+        # this session has moved the project — two different baselines
+        # once a goal outlives a restart.
+        goal, progress = self._session_progress()
+        if goal:
+            parts.append(f"{progress:,} / {goal:,} today")
+            delta = self._project_total - self._session_start_total
+            parts.append(f"{delta:+,} this session")
         if self.current_id:
             broken = self._broken_links()
             if broken:
                 parts.append(f"broken link(s): {', '.join(broken)}")
-        self.statusBar().showMessage(" · ".join(parts))
+        self.word_count_label.setText(" · ".join(parts))
+
+    def _session_progress(self) -> tuple[int, int]:
+        """(daily goal, words toward it today) — BUILD-NOW 6.
+
+        Three project settings carry it: the target itself, the day the
+        count belongs to, and the project total today's count started
+        from. A stored day that isn't today re-bases silently, so each
+        day starts at zero while the target carries over — and all three
+        survive a restart, which is the whole point of a per-day goal
+        that nobody wants to set twice.
+        """
+        if not self.project:
+            return 0, 0
+        try:
+            goal = int(self.project.get_setting("session_goal", "0"))
+        except ValueError:
+            return 0, 0
+        if goal <= 0:
+            return 0, 0
+        today = QDate.currentDate().toString(Qt.ISODate)
+        if self.project.get_setting("session_goal_day") != today:
+            # Re-base from a freshly read total, never _project_total:
+            # this can run mid-switch, while that field still holds the
+            # previous project's sum.
+            documents = self.project.documents()
+            in_template = template_side_ids(documents)
+            fresh = sum(d.word_count for d in documents
+                        if d.id not in in_template)
+            self.project.set_setting("session_goal_day", today)
+            self.project.set_setting("session_goal_baseline", str(fresh))
+        try:
+            baseline = int(
+                self.project.get_setting("session_goal_baseline", "0"))
+        except ValueError:
+            baseline = 0
+        return goal, max(0, self._project_total - baseline)
+
+    def set_session_goal(self) -> None:
+        """Pick today's word target; 0 clears it (BUILD-NOW 6)."""
+        if not self.project:
+            self.statusBar().showMessage("Open a project first", 3000)
+            return
+        try:
+            current = int(self.project.get_setting("session_goal", "0"))
+        except ValueError:
+            current = 0
+        value, accepted = QInputDialog.getInt(
+            self, "Daily goal", "Words to write today:",
+            current or 2000, 0, 1_000_000, 100)
+        if not accepted:
+            return
+        self.project.set_setting("session_goal", str(value))
+        self.project.set_setting(
+            "session_goal_day", QDate.currentDate().toString(Qt.ISODate))
+        # Today's count starts where the saved totals stand right now.
+        self.project.set_setting(
+            "session_goal_baseline", str(self._project_total))
+        self._update_word_count()
+        if value:
+            self.statusBar().showMessage(f"Daily goal: {value:,} words", 3000)
+        else:
+            self.statusBar().showMessage("Daily goal cleared", 3000)
 
     def closeEvent(self, event) -> None:
         self.stop_speech()

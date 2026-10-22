@@ -58,20 +58,20 @@ class SelectionCountTests(unittest.TestCase):
     def test_selecting_a_paragraph_shows_its_count(self):
         self._select_first_paragraph()
 
-        message = self.window.statusBar().currentMessage()
+        message = self.window.word_count_label.text()
 
         self.assertIn("5 selected", message)
         self.assertIn("8 words", message)          # the document count stays
 
     def test_deselecting_restores_the_document_count_alone(self):
         self._select_first_paragraph()
-        self.assertIn("selected", self.window.statusBar().currentMessage())
+        self.assertIn("selected", self.window.word_count_label.text())
 
         cursor = self.window.editor.textCursor()
         cursor.clearSelection()
         self.window.editor.setTextCursor(cursor)
 
-        message = self.window.statusBar().currentMessage()
+        message = self.window.word_count_label.text()
         self.assertIn("8 words", message)
         self.assertNotIn("selected", message)
 

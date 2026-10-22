@@ -121,6 +121,25 @@ in the status bar and the day's delta from the session start.
 *Acceptance:* a target survives a restart; writing 500 words shows 500 of the
 goal without re-opening a dialog.
 
+**Built (2026-10-22).** Document → Set Daily Goal… (`Ctrl+G`), 0 clears.
+Three project settings carry it — `session_goal`, `session_goal_day`,
+`session_goal_baseline` (project total when today's count began) — so the
+target and today's progress both survive a restart; a stored day that isn't
+today re-bases silently from a freshly read total (never `_project_total`,
+which mid-switch still holds the *previous* project's sum) so each day
+starts at zero while the target carries over. Status bar shows
+`500 / 2,000 today · +500 this session` (day progress vs. session delta —
+two baselines once a goal outlives a restart).
+
+**Counts moved to a permanent status-bar widget** (`word_count_label`):
+`showMessage` was displaced by the next "Saved" notice and, on timeout,
+QStatusBar clears to nothing — measured, not assumed — so live goal
+progress would have vanished after every save. Counts and temporary
+messages now coexist; `save_current` and `_switch_project` redraw the
+label after their totals land. Nine tests in `tests/test_session_goal.py`;
+`tests/test_selection_count.py` reads the label now. Suite 500, exit 0;
+both mutations (rebase removed, post-save redraw removed) caught.
+
 ## 7. DOCX/ODT manuscript import
 The gap the author spotted: we export DOCX beautifully and cannot read one.
 Use the existing import floor — never overwrite, numbered second copies,

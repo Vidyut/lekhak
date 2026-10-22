@@ -590,7 +590,8 @@ sprouts no blank pages, asserted by test); and the HTML export marks
 `break-before: page` between units, inline so a user template's own CSS keeps
 the last word. Still to come: the same breaks in EPUB (inherent per unit) and
 form-feed consideration for text, plus the template-discovery phases
-(`docs/TEMPLATES.md` §9). Suite 447, exit 0. A comparison against other
+(`docs/TEMPLATES.md` §9). Suite 452, exit 0 (tests kept being added after this record was written; this
+is the verified count at release). A comparison against other
 writing software, with an easy batch queued, is in `docs/IDEAS.md`.
 
 ## Phase 2 — books, variants, and conditional content
