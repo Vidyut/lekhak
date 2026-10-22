@@ -387,15 +387,6 @@ slot editor's unknown-key check says so *while the template is being written*,
 which is when that is cheap to fix. The one collision worth a warning remains a
 metadata key named exactly `Title`, where the built-in wins.
 
-**Eccentricities belong to the writer, and we stay out of the way.** A writer
-may well end up with `${TITLE}`, `${Title}` and `${title}` meaning the book, the
-chapter and the document — their own vocabulary built from metadata keys, which
-the system is permissive enough to allow. *"My point is that this is a user's
-eccentricity."* We do not build such conventions in, and we do not document them
-as if they were ours; the single place the app speaks up is the collision
-warning. Same boundary as page sizes: the picker is our responsibility, a
-determined writer's workspace is theirs.
-
 **Application-level metadata (Preferences).** A key/value list in
 Preferences applies to every export of every project: set `Author = …` once
 if you are always the same writer, or an imprint if you only publish ebooks.
