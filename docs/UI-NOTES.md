@@ -3,14 +3,14 @@
 Owner: the interface side (`docs/WORK-SPLIT.md`). Reported by the author,
 recorded so nothing gets lost between sessions.
 
-## 1. Outliner: show only the selected folder's children
+## 1. Outliner: show only the selected folder's children — DONE (ab21345)
 
 The corkboard already does this and is right; the outliner still lists the
 whole project, so even after finding the right folder the writer is scrolling
 through everything. Selecting a folder should scope the outliner to that
 folder's children, exactly as it scopes the corkboard.
 
-## 2. Editor and Page are not available for a folder
+## 2. Editor and Page are not available for a folder — DONE (c0ac213)
 
 A folder is a container. If the Editor tab is there when a folder is
 selected, sooner or later somebody types into it — and prose on a container is
@@ -67,7 +67,7 @@ because they travel with the manuscript and must survive being shared. Put
 per-project settings in Preferences and the same dialog would mean different
 things depending on what is open, which is how settings screens get hated.
 
-## 5. "Section target" should say what it is
+## 5. "Section target" should say what it is — DONE (fcd53d5)
 
 The stored field is already `word_target`; only the label hides it. Call it
 **Word count goal**, with the zero state reading **No goal** (not "No
@@ -102,6 +102,31 @@ what to do."* Four small fixes:
   word-count goal — each should be one hover away from the control that
   changes it. Most of the confusion in this project has been of that shape:
   the value is visible, the lever is elsewhere.
+
+## 7. One paper size per book — enforce it
+
+A book with some pages 5 × 7 and some 6 × 9 is not a book. Page setup should
+therefore be settable **only on a folder**, never on a chapter or a scene:
+
+- **Engine:** `set_page_setup` refuses a target that is not a container, so the
+  rule holds no matter which door is used (inspector, future script, a preset).
+- **Interface:** the Page setup button appears on folders only. With a scene
+  or chapter selected the inspector shows the resolved value *read-only* and
+  names its owner — *"Paper: 6 × 9 — from ‘Perfectly Flawed’. Change it
+  there."* That is item 6's rule again: from the consequence to the setting.
+- **Nearest ancestor still wins**, so setting it on the book covers everything
+  inside, and a *series* folder can set a house trim for all its books.
+
+**The case this does not solve:** an export spanning two books with different
+trims. Today one file gets one paper size and the first book in binder order
+wins (1.15's recorded edge). Two honest options, and the second is better if
+it is not expensive:
+
+1. warn in the export dialog — *"this selection spans ‘A’ (5 × 7) and ‘B’
+   (6 × 9); the file will use A's"*;
+2. honour each book's own trim by stamping its sections separately, since DOCX
+   carries a page size per section anyway. Then a two-book file is genuinely
+   two books in one file, which is what the writer selected.
 
 **Assigned to the interface side** (`docs/WORK-SPLIT.md`): Preferences
 rebuild, the three items above it, and this rename, while the engine side
