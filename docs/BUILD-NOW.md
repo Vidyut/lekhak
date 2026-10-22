@@ -4,6 +4,27 @@ What gets built **before** the template engine, in order, with the thing that
 tells us it works. Nothing here depends on the template design, so none of it
 can be invalidated by the spec review still in progress.
 
+## 0. Folder view: outliner by default, remembered
+
+Clicking a folder currently switches to the corkboard
+(`_selection_changed`: `setCurrentWidget(self.corkboard)`). It should open the
+**outliner** by default, and remember whichever view the writer actually uses
+for folders — per project, as session state beside `editor_zoom`, so a
+corkboard lover is not fought either.
+*Acceptance:* selecting a folder shows the outliner; switching to the
+corkboard with a folder selected and then selecting another folder shows the
+corkboard; reopening the project keeps that choice.
+
+## Parallel work for an idle small model
+
+Not code. A tiny local model must not edit this repository — and it must not
+edit anyone's manuscript either (docs/AI.md). What it *can* usefully produce
+are **verifiable text artefacts**, where a bad result is obvious in seconds:
+a synthetic manuscript fixture with known structure (chapters, scenes, front
+matter, injected typos) to drive the importer and word-count tests, and a
+corpus of realistic bloopers to exercise the proofreading pass. Structure and
+detectability matter; prose quality does not.
+
 ## 1. File → Open Recent
 Projects remembered in `QSettings` (`session/recentProjects`), newest first,
 capped at eight, entries pruned when the folder is gone, updated on a
