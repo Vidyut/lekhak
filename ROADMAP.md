@@ -1071,6 +1071,14 @@ is a decision for when this gets scheduled.
   Where several items share a name, the writer picks which one: the app
   never guesses on their behalf. Writing into a folder that already exists
   is allowed — behind that confirmation, never from a bare paste.
+- **Ship as few conventions as possible.** A convention is something the writer
+  must learn, remember and obey, so every one we add takes away room to do
+  exactly what they want. The app supplies defaults and a sensible vocabulary,
+  then stays out of the way: no `Metadata.` prefix to remember, no case rules
+  in placeholder names, no page-size picker loose inside a book, no policing of
+  a determined writer's eccentricities. Where a convention is genuinely needed
+  — `Templates` as a reserved folder name is the clearest case — it is said
+  once, in one place, and only then.
 - **Lean over clever, and every line must earn its place.** Before
   implementing a feature, check both sides: what it costs (a new mechanism,
   a new stored role, a new regex in a write path, a new code path that can
