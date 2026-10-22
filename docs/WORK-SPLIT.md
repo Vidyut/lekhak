@@ -22,6 +22,39 @@ to-do. Read this before editing anything.
 6. Small commits, one idea each, message in the repo's style
    (`area: what changed`, from the user's point of view where possible).
 
+## When a writer is cut off mid-task
+
+Being interrupted is ordinary — a provider limit, a crash, a person going to
+bed. It is not a discipline failure, and the fix is not "be more careful": it
+is to make interruption *cheap*. Three habits do that.
+
+- **Small, green, committed steps.** Work lands in coherent increments so a
+  cut-off costs at most the current step. A `wip:` commit is better than a
+  dirty tree: it is recoverable, and a dirty tree blocks the other writer's
+  `pull --rebase` (tonight it did exactly that).
+- **Prefer appending to in-place rewriting.** A new module plus a small
+  wiring change survives interruption — the half comes in reviewable, and the
+  tree stays green. A wholesale rewrite of an existing file does not: cut off
+  halfway, it breaks everything that builds against it. This is the strongest
+  argument for doing the Preferences rebuild as a new module rather than by
+  editing `app.py` in place.
+- **Branch for anything atomic.** `git switch -c name/feature`, commit there,
+  merge when green. Main stays green whether or not the writer comes back.
+
+**If you find a dirty tree you did not make** — the recovery, in order:
+
+```bash
+git diff -- <file> > /tmp/opencode/<who>-<file>.diff    # keep the work
+cp <file> /tmp/opencode/<who>-<file>.partial            # keep the file
+git checkout -- <file>                                  # restore green
+# verify: the suite must pass before anything else happens
+git apply /tmp/opencode/<who>-<file>.diff               # if it is wanted back
+```
+
+That is what was done for MiMo's half-finished Preferences refactor: the patch
+and the file are in `/tmp/opencode/mimo/`, the tree is green, and nothing was
+lost by restoring it.
+
 ## Areas
 
 **Engine — opencode.** The parts that decide what an export *is*:
