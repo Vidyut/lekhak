@@ -222,9 +222,9 @@ Templates/
   Page size (inches - horizontal, vertical): 5,7
   Margins (L,T,R,B/I,T,O,B): 0.5, 0.3, 0.3, 0.3
   # Running heads, left/middle/right; blank slots keep their commas
-  Header: {Series}, , {Author}
-  Header (Left, Middle, Right): , , {Book}
-  Footer: , {Page}, ${PagesTotal}
+  Header: ${Series}, , ${Author}
+  Header (Left, Middle, Right): , , ${Book}
+  Footer: , ${Page}, ${PagesTotal}
   # Page starts, per kind
   New Chapter: Recto
   New Scene: Page break
@@ -232,8 +232,7 @@ Templates/
 
   Units are inches, or millimetres with an `mm` suffix. Margins are four
   values (left/top/right/bottom) or a mirrored pair (inside/outside).
-  Placeholders are the same `${…}` namespace as everywhere else — `{Book}`
-  in the sketch above is shorthand for `${Book}` — so a running head can say
+  Placeholders are the same `${…}` namespace as everywhere else — so a running head can say
   `${Series}`, `${Author}`, `${Book}`, `${Title}`, `${Date}` or any metadata
   key. `New Chapter` / `New Scene` take the page-start vocabulary.
 
@@ -333,6 +332,18 @@ This is what makes `${Metadata.Author}` in a scene's page footer, or
 `${Metadata.Status}` on a single scene, work without repeating anything:
 folder metadata is metadata for everything inside the folder.
 
+**What is special: exactly two things.** `${…}` is a value and `$if(…)` /
+`$else` / `$endif` are conditionals. Everything else is literal text, and this
+is load-bearing rather than incidental: html slots are full of CSS, and
+`p { font-size: 12pt; }` passes through the parser untouched because a bare
+brace means nothing. No `{{ }}`, no `{% %}` — if a template arrived from Jinja,
+Handlebars or Mustache it will not work, and it should not look like it might.
+
+The only sequence a writer cannot type literally is `${` itself. Give it an
+escape — `$$` is a literal `$`, so `$${Name}` prints as `${Name}` — because
+"how do I write it without the app eating it" is a question that arrives the
+first week, not the first year.
+
 **One namespace (author's direction, 2026-10-21).** There is no `Metadata.`
 tier to remember. A placeholder is matched against the built-in values first
 and the resolved metadata second, so `${Author}`, `${Status}` and `${PoV}` work
@@ -342,10 +353,27 @@ what existing templates already say. Conditionals read the same namespace, so
 
 Implementation is a *flattening*, not new syntax: each resolved metadata entry
 is published under both its own name and its `Metadata.` alias, so the parser
-never learns a second rule. One guard: a metadata key that collides with a
-built-in — a key literally called `Title` — is a configuration error to warn
-about when a template is saved. Built-ins win, and the warning says so rather
-than leaving a silent shadow.
+never learns a second rule.
+
+**Names are case-insensitive, and may contain spaces.** The author's example of
+what a template should feel like:
+
+```
+${author} wrote ${Book title} as a part of the ${series} series.
+```
+
+So `${author}`, `${Author}` and `${AUTHOR}` are the same value, and
+`${Book title}` finds a metadata key of that name. Matching normalises the name
+— casefolded, trimmed, internal runs of whitespace collapsed — on both sides,
+which is what makes it easy to remember: you type what you want to see, not a
+path to it.
+
+Two guards follow from that, and both are warnings rather than silence:
+
+- a metadata key that normalises the same as a **built-in** (`${title}` when
+  `Title` exists) — built-ins win, and the warning says so;
+- two metadata keys that normalise to the **same name** on one document
+  (`Book title` and `book  title`) — the writer meant one of them.
 
 **Application-level metadata (Preferences).** A key/value list in
 Preferences applies to every export of every project: set `Author = …` once
