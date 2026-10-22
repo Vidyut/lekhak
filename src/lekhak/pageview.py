@@ -35,6 +35,12 @@ PAGE_PAD = 20.0
 # downscales past this (below it the page is unreadable anyway).
 MIN_SCALE = 0.15
 MAX_SCALE = 1.0
+# Manual zoom on top of fit-to-window (Ctrl+scroll, the View menu). It is
+# a canvas scale, not a font size: the page keeps its real geometry and
+# the pagination stays exactly what the export will print.
+SCALE_STEP = 0.1
+MIN_USER_SCALE = 0.25
+MAX_USER_SCALE = 4.0
 # The projection lays out at this many pixels per inch; fit_scale puts
 # the scale on top of that for the current viewport.
 DPI = 96.0
@@ -127,6 +133,7 @@ class PageCanvas(QWidget):
         self._document.setDocumentMargin(0.0)
         self._geometry = None            # None until a page is set
         self._scale = 1.0
+        self._user_scale = 1.0      # manual zoom; fit-to-window is the floor
         self._count = 1
         self._cache_extent = QSize(0, 0)
 
@@ -141,6 +148,15 @@ class PageCanvas(QWidget):
     @property
     def scale(self) -> float:
         return self._scale
+
+    @property
+    def user_scale(self) -> float:
+        return self._user_scale
+
+    def set_user_scale(self, scale: float) -> None:
+        """Set the manual zoom factor (applied on the next refit)."""
+        self._user_scale = min(max(round(scale, 2), MIN_USER_SCALE),
+                               MAX_USER_SCALE)
 
     def set_page(self, html: str, geometry: dict | None,
                  font: QFont | None = None) -> None:
@@ -166,7 +182,7 @@ class PageCanvas(QWidget):
         self._scale = fit_scale(
             self._geometry,
             (max(1, viewport_size.width()), max(1, viewport_size.height())),
-        )
+        ) * self._user_scale
         extent = canvas_extent(self._geometry, self._count, self._scale)
         self._cache_extent = extent
         self.setFixedSize(extent)
@@ -291,6 +307,19 @@ class PageScrollArea(QScrollArea):
             bar_v.setValue(int(ratio_v * bar_v.maximum()))
             bar_h.setValue(int(ratio_h * bar_h.maximum()))
 
+    def zoom_by(self, delta: float) -> None:
+        self._canvas.set_user_scale(self._canvas.user_scale + delta)
+        self.fit()
+
+    def wheelEvent(self, event) -> None:
+        """Ctrl+wheel zooms the paper; plain wheel keeps scrolling."""
+        if event.modifiers() & Qt.ControlModifier:
+            self.zoom_by(SCALE_STEP if event.angleDelta().y() > 0
+                         else -SCALE_STEP)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
 
 class PageView(QWidget):
     """The widget the Editor-tab stack hosts: scroll area + canvas.
@@ -325,6 +354,11 @@ class PageView(QWidget):
     def set_page(self, html: str, geometry: dict | None,
                  font: QFont | None = None) -> None:
         self._canvas.set_page(html, geometry, font)
+        self._area.fit()
+
+    def set_user_scale(self, scale: float) -> None:
+        """Manual zoom for the paper — app drives it from the editor's."""
+        self._canvas.set_user_scale(scale)
         self._area.fit()
 
     def resizeEvent(self, event) -> None:

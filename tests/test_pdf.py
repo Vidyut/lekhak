@@ -9,6 +9,7 @@ through this module.
 """
 
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -176,6 +177,33 @@ class ConvertTests(unittest.TestCase):
         leftovers = [p.name for p in destination.parent.iterdir()
                      if p.name.startswith(".lekhak-")]
         self.assertEqual(leftovers, [])
+
+    def test_timeout_kills_the_workers_whole_process_group(self):
+        """The worker starts LibreOffice as a child: a timeout has to take
+        the group, or soffice survives and convert() then deletes the
+        profile directory out from under it, breaking the next export."""
+        class FakeProcess:
+            args = ["py", "uno_pdf.py"]
+            pid = 4242
+            returncode = None
+
+            def communicate(self, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired("uno_pdf.py", timeout)
+                return "", ""
+
+        killed = []
+        with patch.object(pdf.subprocess, "Popen",
+                          return_value=FakeProcess()) as spawned, \
+                patch.object(pdf.os, "killpg",
+                             side_effect=lambda pid, sig: killed.append((pid, sig))):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                pdf._run_uno("py", self.root / "in.docx",
+                             self.root / "out.pdf", "soffice", self.root)
+
+        self.assertTrue(spawned.call_args.kwargs["start_new_session"],
+                        "the worker must lead its own session to be killable as one")
+        self.assertEqual(killed, [(4242, signal.SIGKILL)])
 
     def test_convert_reports_the_workers_stderr(self):
         source = self.root / "book.docx"

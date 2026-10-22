@@ -9,6 +9,7 @@ into a temp dir, windows never close()ed.
 
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -61,6 +62,28 @@ def _caret(editor, position=None, end=False):
     else:
         cursor.setPosition(position)
     editor.setTextCursor(cursor)
+
+
+@contextmanager
+def _fail_writes_after(count):
+    """Let ``count`` content writes through, then fail every one after.
+
+    An "always fail" patch never reaches the operation under test:
+    accept/reject saves once before it resolves anything, and that first
+    failure stops the whole path. The marks have to reach the disk
+    before the failing write matters.
+    """
+    original = Project.write_content
+    seen = {"count": 0}
+
+    def flaky(self, document_id, html):
+        seen["count"] += 1
+        if seen["count"] > count:
+            raise OSError("disk full")
+        return original(self, document_id, html)
+
+    with patch.object(Project, "write_content", flaky):
+        yield
 
 
 class RevisionStorageTests(unittest.TestCase):
@@ -149,6 +172,25 @@ class RevisionStorageTests(unittest.TestCase):
         self.project.reconcile_revisions(self.draft.id)
 
         self.assertEqual(self.project.revisions(self.draft.id), [])
+
+    def test_restore_revisions_puts_the_same_rows_back(self):
+        """A failed accept/reject write depends on the *ids* surviving:
+        the live document still carries them in its marks, and a fresh
+        id would make the next accept look for a mark that cannot exist."""
+        rows = [self.project.add_revision(self.draft.id, "s1", "insert",
+                                          "Author", sequence)
+                for sequence in (1, 2)]
+
+        self.project.remove_revisions([row.id for row in rows])
+        self.assertEqual(self.project.revisions(self.draft.id), [])
+
+        self.project.restore_revisions(rows)
+
+        restored = self.project.revisions(self.draft.id)
+        self.assertEqual([row.id for row in restored],
+                         [row.id for row in rows])
+        self.assertEqual([row.sequence for row in restored], [1, 2])
+        self.assertEqual([row.kind for row in restored], ["insert", "insert"])
 
 
 class RevisionEditorTests(unittest.TestCase):
@@ -405,6 +447,57 @@ class RevisionWindowTests(unittest.TestCase):
         self.assertEqual(self.project.revisions(self.scene.id), [])
         self.assertEqual(self.window.editor.toPlainText(),
                          "First light prose.")
+
+    def test_a_failed_save_keeps_marks_and_rows_together(self):
+        """A failed write after an accept puts the rows back.
+
+        The marks on disk are the one thing a later save cannot
+        reconstruct, so the rows that explain them must survive the
+        failure — under their own ids, because the live document still
+        carries those ids in whatever marks remain. The first save lands
+        (it puts the marks on disk); only the resolve's own write fails.
+        """
+        self._open_scene_tracked()
+        _press_text(self.window.editor, " extra")
+        self.assertTrue(self.window.save_current())   # marks reach the disk
+        stored = self.project.read_content(self.scene.id)
+        self.assertEqual(len(INSERT_SPAN_RE.findall(stored)), 1)
+
+        with patch("lekhak.app.QMessageBox.critical"), \
+                _fail_writes_after(1):
+            self.window.accept_all_changes()
+
+        rows = self.project.revisions(self.scene.id)
+        self.assertEqual(len(rows), 1)
+        stored = self.project.read_content(self.scene.id)
+        self.assertEqual(len(INSERT_SPAN_RE.findall(stored)), 1)
+
+    def test_a_failed_save_does_not_orphan_a_revision_pass(self):
+        """Same contract through the passes dialog."""
+        self._open_scene_tracked()
+        _press_text(self.window.editor, "a")
+        self.assertTrue(self.window.save_current())
+
+        class _StubDialog:
+            chosen_accept = True
+
+            def __init__(self, sessions, parent=None):
+                self.sessions = sessions
+
+            def exec(self):
+                return QDialog.Accepted
+
+            def selected_session(self):
+                return self.sessions[0]["session_id"]
+
+        with patch("lekhak.app.RevisionPassesDialog", _StubDialog), \
+                patch("lekhak.app.QMessageBox.critical"), \
+                _fail_writes_after(1):
+            self.window.revision_passes()
+
+        self.assertEqual(len(self.project.revisions(self.scene.id)), 1)
+        stored = self.project.read_content(self.scene.id)
+        self.assertEqual(len(INSERT_SPAN_RE.findall(stored)), 1)
 
     def test_revision_passes_dialog_resolves_one_pass(self):
         self._open_scene_tracked()

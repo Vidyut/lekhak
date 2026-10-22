@@ -44,7 +44,8 @@ class PageStartTests(unittest.TestCase):
     def test_combo_lists_every_value_in_roadmap_order(self):
         values = [self.window.page_break_box.itemData(index)
                   for index in range(self.window.page_break_box.count())]
-        self.assertEqual(values, ["auto", "left", "right", "next-odd", "next-even"])
+        self.assertEqual(values, ["auto", "flow", "page", "left", "right",
+                                  "next-odd", "next-even"])
 
     def test_selection_loads_the_document_value(self):
         self.project.update_document(self.scene.id, page_break="right")

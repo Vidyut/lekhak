@@ -8,6 +8,8 @@ holds read-aloud, pause and stop. Nothing here synthesizes audio
 itself; the backend does, and the mock engine covers tests.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, QSettings, Signal

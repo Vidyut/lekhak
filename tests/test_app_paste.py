@@ -385,5 +385,16 @@ class EditMenuTests(unittest.TestCase):
         )
 
 
+def tearDownModule():
+    """Hand the clipboard back empty before the interpreter goes away.
+
+    PySide6 6.12 frees a Python-owned QMimeData that is still on the
+    clipboard a second time during shutdown, so a suite whose every test
+    passed still exits 139 — which any CI that trusts the exit code reads
+    as a failure. Dropping it here, while Qt is still alive, is the fix.
+    """
+    QApplication.clipboard().clear()
+
+
 if __name__ == "__main__":
     unittest.main()

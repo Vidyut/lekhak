@@ -117,6 +117,23 @@ class AIEndpointTests(unittest.TestCase):
 
         self.assertIn("Cannot reach", str(caught.exception))
 
+    def test_only_remote_plain_http_counts_as_in_the_clear(self):
+        self.assertTrue(ai._sends_key_in_the_clear("http://example.com/v1"))
+        self.assertFalse(ai._sends_key_in_the_clear("http://localhost:11434/v1"))
+        self.assertFalse(ai._sends_key_in_the_clear("http://127.0.0.1:1234/v1"))
+        self.assertFalse(ai._sends_key_in_the_clear("https://example.com/v1"))
+
+    def test_a_key_is_refused_over_plain_http_to_a_remote_host(self):
+        settings = ai.AISettings(endpoint="http://example.com/v1",
+                                 model="test-model", key="sk-secret")
+
+        with self.assertRaises(ai.AIError) as caught:
+            ai.complete("s", "u", settings)
+
+        self.assertIn("unencrypted", str(caught.exception))
+        self.assertIn("example.com", str(caught.exception))
+        self.assertEqual(self.server.requests, [])   # refused before sending
+
     def test_empty_model_refuses_before_any_request(self):
         settings = ai.AISettings(endpoint=self.settings.endpoint, model="")
 

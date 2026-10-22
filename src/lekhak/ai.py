@@ -8,8 +8,11 @@ tracked-changes path (apply_tracked_replacement), so a model can never
 rewrite the manuscript behind the writer's back.
 """
 
+from __future__ import annotations
+
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
@@ -46,6 +49,20 @@ def save_settings(settings: AISettings) -> None:
     store.setValue("ai/key", settings.key)
 
 
+def _sends_key_in_the_clear(endpoint: str) -> bool:
+    """True for a non-local endpoint reached over plain http.
+
+    Local endpoints are fine — Ollama's own default is
+    http://localhost:11434/v1 — and so is a remote https one. What must
+    never happen is a bearer key (and with it the manuscript text) going
+    out over an unencrypted network connection.
+    """
+    parsed = urllib.parse.urlsplit(endpoint)
+    if parsed.scheme != "http":
+        return False
+    return (parsed.hostname or "") not in {"localhost", "127.0.0.1", "::1"}
+
+
 def complete(system: str, user: str,
              settings: AISettings | None = None) -> str:
     """One chat round-trip; returns the assistant message text.
@@ -57,6 +74,12 @@ def complete(system: str, user: str,
     if not settings.model.strip():
         raise AIError(
             "No AI model set — fill in model and endpoint in Preferences.")
+    if settings.key and _sends_key_in_the_clear(settings.endpoint):
+        raise AIError(
+            "Refusing to send the API key unencrypted: "
+            f"{settings.endpoint} is plain http and not localhost. Use an "
+            "https:// endpoint, or keep the key off a remote http one."
+        )
     endpoint = settings.endpoint.rstrip("/")
     payload = {
         "model": settings.model,

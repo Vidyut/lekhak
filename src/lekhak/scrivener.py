@@ -257,11 +257,14 @@ def import_scriv(project: Project, path: Path, *, title: str = "") -> str:
     """
     parsed = parse_scriv(path)
     root_title = title.strip() or parsed.draft.title or Path(path).stem
-    root = project.add_document(root_title, None, parsed.draft.kind)
+    root = project.add_document(
+        project.unique_title(root_title, None), None, parsed.draft.kind)
 
     def add_children(items: list[ScrivItem], parent_id: str) -> None:
         for item in items:
-            document = project.add_document(item.title, parent_id, item.kind)
+            item_title = (item.title if item.kind == "scene"
+                          else project.unique_title(item.title, parent_id))
+            document = project.add_document(item_title, parent_id, item.kind)
             if item.content.strip():
                 project.write_content(document.id, item.content)
             if item.synopsis:

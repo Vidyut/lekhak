@@ -129,9 +129,11 @@ def import_yw7(project: Project, path: Path, *, title: str = "") -> str:
     """
     parsed = parse_yw7(path)
     folder_title = title.strip() or parsed.title or Path(path).stem
-    folder = project.add_document(folder_title, None, "folder")
+    folder = project.add_document(
+        project.unique_title(folder_title, None), None, "folder")
     for chapter in parsed.chapters:
-        document = project.add_document(chapter.title, folder.id, "chapter")
+        document = project.add_document(
+            project.unique_title(chapter.title, folder.id), folder.id, "chapter")
         for scene in chapter.scenes:
             scene_document = project.add_document(
                 scene.title, document.id, "scene")

@@ -32,16 +32,20 @@ returns it, with no Project access. MainWindow methods that open them
 apply the result.
 """
 
+from __future__ import annotations
+
 import json
 import re
+import shutil
 import sys
+import tempfile
 from html import escape
 from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import (
-    QDate, QEvent, QItemSelectionModel, QSettings, QSize, Qt, QTimer, QUrl,
-    Signal,
+    QDate, QEvent, QItemSelectionModel, QMimeData, QSettings, QSize, Qt,
+    QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import (
     QAction, QDesktopServices, QFont, QKeySequence,
@@ -69,8 +73,8 @@ from . import revisions
 from .importer import (
     dump_books, import_all_books, import_markdown_file, parse_dump,
 )
-from .ywriter import import_yw7, parse_yw7
-from .scrivener import import_scriv, parse_scriv
+from .ywriter import import_yw7
+from .scrivener import import_scriv
 from .project import (
     DEFAULT_LINK_POLICY, DEFAULT_PAGE_SETUP, EXPORT_KINDS, PAGE_TRIMS,
     Project, clean_page_setup, trim_id_for,
@@ -82,6 +86,45 @@ from .templates import (
     TemplateSet, copy_template_set, discover_template_sets,
     project_template_root, slot_file_path, validate_slot, write_slot,
 )
+
+
+def _destructive_box(parent, title: str, question: str, *, confirm: str,
+                     checkbox: str, detail: str = "") -> QMessageBox:
+    """The confirmation for anything that deletes or overwrites content.
+
+    A Yes/No dialog is clicked through on reflex, so the destructive button
+    starts disabled and only the checkbox unarms it; Cancel is the default
+    button, so Enter (and Escape) are safe. The question names the target,
+    and the checkbox says what is about to be lost — destruction is confirmed,
+    and never by name alone (ROADMAP working agreements).
+    """
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Warning)
+    box.setWindowTitle(title)
+    box.setText(question)
+    box.setInformativeText(checkbox)
+    if detail:
+        box.setDetailedText(detail)
+    destructive = box.addButton(confirm, QMessageBox.DestructiveRole)
+    cancel = box.addButton(QMessageBox.Cancel)
+    gate = QCheckBox("I understand what will be lost")
+    box.setCheckBox(gate)
+    destructive.setEnabled(False)
+    gate.toggled.connect(destructive.setEnabled)
+    box.setDefaultButton(cancel)
+    box.setEscapeButton(cancel)
+    return box
+
+
+def confirm_destructive(parent, title: str, question: str, *, confirm: str,
+                        checkbox: str, detail: str = "") -> bool:
+    """True only when the writer ticked the box *and* pressed the button."""
+    box = _destructive_box(parent, title, question, confirm=confirm,
+                           checkbox=checkbox, detail=detail)
+    box.exec()
+    clicked = box.clickedButton()
+    return (clicked is not None
+            and box.buttonRole(clicked) == QMessageBox.DestructiveRole)
 
 
 class FindReplaceDialog(QDialog):
@@ -228,12 +271,16 @@ class ProjectReplaceDialog(QDialog):
         except re.error as error:
             QMessageBox.warning(self, "Replace in Project", f"Invalid pattern: {error}")
             return
-        answer = QMessageBox.question(
-            self, "Replace in Project",
-            "Replace every match in the whole project? Undo is not available "
-            "for project-wide replaces.",
-        )
-        if answer != QMessageBox.Yes:
+        if not confirm_destructive(
+            self, "Replace in project",
+            "Replace every match in the whole project?",
+            confirm="Replace all",
+            checkbox=(f"{self.preview.count()} matching line(s) in the preview; "
+                      "every stored document that matches is rewritten on disk. "
+                      "Undo does not reach project-wide replaces — a snapshot "
+                      "of each changed document is taken first, which is the "
+                      "way back."),
+        ):
             return
         counts = self.project.replace(
             query, self.replace_text.text(), regex=self.regex_box.isChecked(),
@@ -1424,6 +1471,39 @@ def _collapse_blank_blocks(document: QTextDocument, blank: list[bool]) -> None:
     cursor.endEditBlock()
 
 
+# Editor zoom (display only). The live document is rendered at stored
+# sizes × zoom so the writer can enlarge the type without changing a
+# single formatting property: save_current() divides the factor back out
+# before the HTML reaches Project. That is the same display-layer
+# discipline binder numbers and resolved wiki links follow (see the module
+# docstring) — and the reason this is a *scale*, not a font-size change.
+ZOOM_ANCHOR_PT = 12.0      # the pinned editor size the factor multiplies
+ZOOM_MIN = 0.5
+ZOOM_MAX = 3.0
+ZOOM_STEP = 0.1
+FONT_SIZE_RE = re.compile(r"font-size:(\s*)([0-9]*\.?[0-9]+)pt")
+
+
+def scaled_font_sizes(html: str, factor: float) -> str:
+    """Every ``font-size`` in Qt's HTML multiplied by ``factor``.
+
+    The one display-layer transform that has to run both ways: inbound
+    (stored → editor, ×zoom) and outbound (editor → stored, ÷zoom). Only
+    the numbers move — spacing and the rest of the CSS come back
+    byte-for-byte, and a factor of exactly 1 returns the string it was
+    given, so an unzoomed save cannot rewrite a file at all.
+    """
+    if factor == 1.0:
+        return html
+
+    def rewrite(match: re.Match) -> str:
+        size = round(float(match.group(2)) * factor, 2)
+        text = f"{size:.2f}".rstrip("0").rstrip(".")
+        return f"font-size:{match.group(1)}{text}pt"
+
+    return FONT_SIZE_RE.sub(rewrite, html)
+
+
 class LinkEditor(QTextEdit):
     """QTextEdit that reports internal `lekhak://` anchor clicks and puts
     pasted HTML through the paste policy.
@@ -1448,6 +1528,10 @@ class LinkEditor(QTextEdit):
         self._session_id = ""
         self._open_insert_id: str | None = None
         self._open_insert_end = -1
+        # Display zoom (see ZOOM_ANCHOR_PT). MainWindow keeps this equal to
+        # its own factor; the editor needs it only to bring pasted
+        # formatting into display units, so it stays a plain attribute.
+        self.display_scale = 1.0
         self.cursorPositionChanged.connect(self._close_open_insert_if_moved)
 
     # --- tracked changes (2.4) ---------------------------------------------
@@ -1730,6 +1814,7 @@ class LinkEditor(QTextEdit):
         the whole paste a single undo step. Under tracking the pasted
         range becomes one insert change (2.4).
         """
+        self._scale_scratch(document)
         cursor = self.textCursor()
         if cursor.hasSelection() and self._revision_live():
             self._delete_selection_tracked(cursor)
@@ -1743,6 +1828,83 @@ class LinkEditor(QTextEdit):
         if self._revision_live() and end > start:
             self._mark_range_insert(start, end)
             self._close_open_insert()
+
+    def _scale_scratch(self, document: QTextDocument) -> None:
+        """Bring a scratch (pasted) document into display units.
+
+        A paste carries the sizes of wherever it came from; the live
+        document runs at stored sizes × display_scale, so the paste has to
+        be multiplied to match. Without this, pasted text would land at
+        its source size while the prose around it is magnified.
+        """
+        if self.display_scale == 1.0:
+            return
+        cursor = QTextCursor(document)
+        cursor.beginEditBlock()
+        block = document.firstBlock()
+        while block.isValid():
+            fragment = block.begin()
+            while not fragment.atEnd():
+                item = fragment.fragment()
+                if (item.isValid()
+                        and item.charFormat().objectType() == QTextFormat.NoObject):
+                    size = item.charFormat().fontPointSize()
+                    if size > 0:
+                        fmt = QTextCharFormat(item.charFormat())
+                        fmt.setFontPointSize(
+                            round(size * self.display_scale, 2))
+                        cursor.setPosition(item.position())
+                        cursor.setPosition(item.position() + item.length(),
+                                           QTextCursor.KeepAnchor)
+                        cursor.setCharFormat(fmt)
+                fragment += 1
+            block = block.next()
+        cursor.endEditBlock()
+
+    def copy(self) -> None:
+        """Copy in *stored* units — the clipboard is a saved layer, not a
+        display one.
+
+        Qt's own copy exports the live document, which runs at stored
+        sizes × display_scale. Putting that on the clipboard would hand
+        other applications type the manuscript never had, and _scale_scratch
+        would multiply it again on the way back in: at 150 %, a 12 pt
+        paragraph copied here would paste at 27 pt and be *stored* as 18 pt
+        after the next save. So the HTML goes out divided by the factor,
+        the same way save_current() does, and a paste puts it back once.
+        """
+        if self.display_scale == 1.0 or not self.textCursor().hasSelection():
+            super().copy()      # nothing selected: Qt leaves the clipboard alone
+            return
+        super().copy()      # Qt lays the selection out: text, HTML, images
+        clipboard = QApplication.clipboard()
+        source = clipboard.mimeData()
+        if source is None or not source.hasHtml():
+            return          # plain text and images carry no sizes to undo
+        mime = QMimeData()
+        mime.setText(source.text())
+        mime.setHtml(scaled_font_sizes(source.html(), 1.0 / self.display_scale))
+        clipboard.setMimeData(mime)
+
+    def cut(self) -> None:
+        """Cut is copy() plus a delete, so the clipboard half obeys copy().
+
+        Qt's own cut builds the mime data itself and never calls the
+        Python override, which would leave the magnified HTML on the
+        clipboard exactly as copy() used to.
+        """
+        self.copy()
+        self.textCursor().removeSelectedText()
+
+    def wheelEvent(self, event) -> None:
+        """Ctrl+wheel magnifies the writing area (display only)."""
+        if event.modifiers() & Qt.ControlModifier:
+            zoom_by = getattr(self.window(), "zoom_by", None)
+            if zoom_by is not None:
+                zoom_by(ZOOM_STEP if event.angleDelta().y() > 0 else -ZOOM_STEP)
+                event.accept()
+                return
+        super().wheelEvent(event)
 
     def keyPressEvent(self, event) -> None:
         """Typing, erasing and selection replacement under tracking (2.4).
@@ -1895,6 +2057,7 @@ class MainWindow(QMainWindow):
         self.current_id: str | None = None
         self.loading = False
         self.focus_mode = False
+        self.zoom = 1.0            # display-only; see ZOOM_ANCHOR_PT
         self._project_total = 0
         # Display-lifted templates roots (2.1): shown at the bottom of
         # the binder's top level while their storage parent stays put.
@@ -1958,7 +2121,21 @@ class MainWindow(QMainWindow):
         self.outliner.itemClicked.connect(self._outliner_clicked)
 
         self.views = QTabWidget()
-        self.views.addTab(self.editor, "Editor")
+        # The editor's own format bar sits inside the Editor tab, directly
+        # above the prose it acts on — bold, italic, style, font and size are
+        # editor-scoped, so they vanish with the tab instead of staying live
+        # in the window chrome while the corkboard is showing. It is a real
+        # QToolBar (not a plain button row) so focus mode's
+        # findChildren(QToolBar) sweep hides it along with the rest.
+        self.format_bar = QToolBar("Formatting")
+        self.format_bar.setMovable(False)
+        self.editor_page = QWidget()
+        editor_layout = QVBoxLayout(self.editor_page)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+        editor_layout.setSpacing(0)
+        editor_layout.addWidget(self.format_bar)
+        editor_layout.addWidget(self.editor, 1)
+        self.views.addTab(self.editor_page, "Editor")
         self.views.addTab(self.corkboard, "Corkboard")
         self.views.addTab(self.outliner, "Outliner")
         # Page view (3.2): the projection canvas, second tab — it sits
@@ -1987,7 +2164,9 @@ class MainWindow(QMainWindow):
         # open on in DOCX; "auto" flows on. Saved with the document.
         self.page_break_box = QComboBox()
         for label, value in (
-            ("Automatic flow", "auto"),
+            ("Automatic (new page)", "auto"),
+            ("Continuous flow", "flow"),
+            ("New page", "page"),
             ("Left page (verso)", "left"),
             ("Right page (recto)", "right"),
             ("Next odd page", "next-odd"),
@@ -2105,31 +2284,45 @@ class MainWindow(QMainWindow):
         toolbar.addAction("New Scene", self.add_scene)
         toolbar.addAction("Delete", self.delete_section)
         toolbar.addSeparator()
-        toolbar.addAction("B", self.bold)
-        toolbar.addAction("I", self.italic)
-        toolbar.addAction("U", self.underline)
+        toolbar.addWidget(self.search_box)
+        toolbar.addAction("Search", self.search)
+
+        # Prose formatting goes into the Editor tab's bar (see editor_page
+        # above), not the window toolbar: these commands act on the open
+        # document only, and the window toolbar outlives the editor tab.
+        self.format_bar.addAction("B", self.bold)
+        self.format_bar.addAction("I", self.italic)
+        self.format_bar.addAction("U", self.underline)
         self.style_box = QComboBox()
         self.style_box.activated.connect(self.apply_paragraph_style)
         self._rebuild_style_box()
-        toolbar.addWidget(self.style_box)
+        self.format_bar.addWidget(self.style_box)
         self.font_box = QFontComboBox()
         self.font_box.currentFontChanged.connect(lambda font: self.editor.setCurrentFont(font))
-        toolbar.addWidget(self.font_box)
+        self.format_bar.addWidget(self.font_box)
         self.size_box = QComboBox()
         self.size_box.setEditable(True)
         self.size_box.addItems(["9", "10", "11", "12", "14", "16", "18", "24", "32"])
         self.size_box.setCurrentText("12")
         self.size_box.currentTextChanged.connect(self.set_font_size)
-        toolbar.addWidget(self.size_box)
-        toolbar.addAction("• List", self.bullet_list)
-        toolbar.addAction("1. List", self.numbered_list)
-        toolbar.addAction("Left", lambda: self.editor.setAlignment(Qt.AlignLeft))
-        toolbar.addAction("Centre", lambda: self.editor.setAlignment(Qt.AlignCenter))
-        toolbar.addAction("Right", lambda: self.editor.setAlignment(Qt.AlignRight))
-        toolbar.addAction("Clear", self.clear_formatting)
-        toolbar.addSeparator()
-        toolbar.addWidget(self.search_box)
-        toolbar.addAction("Search", self.search)
+        self.format_bar.addWidget(self.size_box)
+        self.format_bar.addAction("• List", self.bullet_list)
+        self.format_bar.addAction("1. List", self.numbered_list)
+        self.format_bar.addAction("Left", lambda: self.editor.setAlignment(Qt.AlignLeft))
+        self.format_bar.addAction("Centre", lambda: self.editor.setAlignment(Qt.AlignCenter))
+        self.format_bar.addAction("Right", lambda: self.editor.setAlignment(Qt.AlignRight))
+        self.format_bar.addAction("Clear", self.clear_formatting)
+        self.format_bar.addSeparator()
+        # Zoom readout (2.x): display magnification of the writing area,
+        # driven by Ctrl+scroll over the text and the View menu. It is a
+        # readout rather than a setting — the value itself lives in the
+        # project's session state beside last_document.
+        self.zoom_label = QLabel(f"{round(self.zoom * 100)}%")
+        self.zoom_label.setToolTip(
+            "Editor zoom — display only; the document keeps its own sizes.\n"
+            "Ctrl+scroll over the text, Ctrl+0 to reset."
+        )
+        self.format_bar.addWidget(self.zoom_label)
 
         self.setStatusBar(QStatusBar())
         self.save_timer = QTimer(self)
@@ -2154,22 +2347,18 @@ class MainWindow(QMainWindow):
         self._action(file_menu, "Export Markdown…", None,
                      lambda: self.export("markdown"))
         file_menu.addSeparator()
+        # Imports land in the open project, always. A "new project"
+        # variant would fork the writer's session (and silently own the
+        # new folder); anyone who wants a fresh project makes one first
+        # (File → New Project) and imports into it.
         self._action(file_menu, "Import Scrivener Dump…", None,
                      self.import_scrivener_dump)
-        self._action(file_menu, "Import Scrivener Dump into New Project…", None,
-                     self.import_scrivener_dump_new_project)
         self._action(file_menu, "Import Markdown File…", None,
                      self.import_markdown_file)
-        self._action(file_menu, "Import Markdown File into New Project…",
-                     None, self.import_markdown_file_new_project)
         self._action(file_menu, "Import yWriter Project…", None,
                      self.import_ywriter)
-        self._action(file_menu, "Import yWriter Project into New Project…",
-                     None, self.import_ywriter_new_project)
         self._action(file_menu, "Import Scrivener Project…", None,
                      self.import_scrivener)
-        self._action(file_menu, "Import Scrivener Project into New Project…",
-                     None, self.import_scrivener_new_project)
         file_menu.addSeparator()
         self._action(file_menu, "Quit", QKeySequence.Quit, self.close)
 
@@ -2207,8 +2396,8 @@ class MainWindow(QMainWindow):
         self._action(edit_menu, "Preferences…", "Ctrl+,", self.preferences)
 
         view_menu = self.menuBar().addMenu("&View")
-        self._action(view_menu, "Zoom In", QKeySequence.ZoomIn, lambda: self.editor.zoomIn(1))
-        self._action(view_menu, "Zoom Out", QKeySequence.ZoomOut, lambda: self.editor.zoomOut(1))
+        self._action(view_menu, "Zoom In", QKeySequence.ZoomIn, self.zoom_in)
+        self._action(view_menu, "Zoom Out", QKeySequence.ZoomOut, self.zoom_out)
         self._action(view_menu, "Reset Zoom", "Ctrl+0", self.reset_zoom)
         self._action(view_menu, "Focus Mode", "F11", self.toggle_focus_mode)
 
@@ -2294,7 +2483,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not open project", str(error))
 
     def _switch_project(self, project: Project) -> None:
-        self.save_current()
+        # A failed save cancels the switch: the editor still holds the only
+        # copy of the text, and closing the project would take it along.
+        if not self.save_current():
+            return
         if self.project:
             self.project.close()
         self.project = project
@@ -2305,6 +2497,9 @@ class MainWindow(QMainWindow):
         QSettings().setValue("session/lastProject", str(project.root))
         self.setWindowTitle(f"{project.get_setting('title', project.root.stem)} — Lekhak")
         last_document = project.get_setting("last_document")
+        # Session state (1.9): the zoom the last session ended on comes
+        # back with the document and the caret, before anything loads.
+        self._load_zoom()
         self._reload_tree(select_id=last_document or None)
         self._set_project_enabled(True)
         if not self.tree.currentItem() and self.tree.topLevelItemCount():
@@ -2680,12 +2875,22 @@ class MainWindow(QMainWindow):
         if self.loading:
             return
         self.stop_speech()
-        self.save_current()
+        if not self.save_current():
+            # Refuse the switch rather than reload from disk: the editor
+            # holds the only copy of the unsaved text. Qt has already moved
+            # the highlight, so put it back where it was.
+            if previous is not None and previous in self._all_items():
+                self.tree.blockSignals(True)
+                self.tree.setCurrentItem(previous)
+                self.tree.blockSignals(False)
+            return
         self.current_id = current.data(0, Qt.UserRole) if current else None
         self.loading = True
         if self.project and self.current_id:
             document = next(d for d in self.project.documents() if d.id == self.current_id)
-            self.editor.setHtml(self.project.read_content(self.current_id))
+            self.editor.setHtml(scaled_font_sizes(
+                self.project.read_content(self.current_id), self.zoom))
+            self._apply_zoom_base()
             self.editor.begin_document(self.project, self.current_id)
             self._resolve_wiki_links()
             self.synopsis.setPlainText(document.synopsis)
@@ -2696,7 +2901,7 @@ class MainWindow(QMainWindow):
                 max(0, self.page_break_box.findData(document.page_break))
             )
             self._refresh_book_widgets(document)
-            if document.kind == "folder" and self.views.currentWidget() is self.editor:
+            if document.kind == "folder" and self.views.currentWidget() is self.editor_page:
                 self.views.setCurrentWidget(self.corkboard)
         else:
             self.editor.clear()
@@ -2911,10 +3116,15 @@ class MainWindow(QMainWindow):
             self.page_view.set_page("", None, None)
             return
         geometry = self.project.effective_page_setup(self.current_id)
+        # Stored sizes, not display ones: the projection has to paginate
+        # the way the export will, so zoom is the canvas's own scale (see
+        # PageView.set_user_scale) and never a font size.
+        anchor = QFont(self.editor.font())
+        anchor.setPointSizeF(ZOOM_ANCHOR_PT)
         self.page_view.set_page(
-            self.editor.document().toHtml(),
+            scaled_font_sizes(self.editor.document().toHtml(), 1.0 / self.zoom),
             geometry,
-            self.editor.font(),
+            anchor,
         )
         count = self.page_view.page_count
         self.statusBar().showMessage(
@@ -2925,7 +3135,7 @@ class MainWindow(QMainWindow):
         """Dblclick on the paper: show the editor at the same
         character — both documents share one HTML source, so the
         offset maps."""
-        self.views.setCurrentWidget(self.editor)
+        self.views.setCurrentWidget(self.editor_page)
         cursor = QTextCursor(self.editor.document())
         cursor.setPosition(min(position, self.editor.document().characterCount() - 1))
         self.editor.setTextCursor(cursor)
@@ -3033,13 +3243,36 @@ class MainWindow(QMainWindow):
     def reject_all_changes(self) -> None:
         self._resolve_all_changes(accept=False)
 
+    def _drop_rows_then_save(self, change_ids: set) -> bool:
+        """Delete the resolved rows, write, and put the rows back on failure.
+
+        The rows have to go *before* the save, not after: save_current()
+        runs reconcile_revisions, which prunes pending rows by counting the
+        marks left in the stored HTML and keeping the first N in sequence
+        order. That count is only right when exactly the resolved rows are
+        already gone — resolving the earlier of two passes would otherwise
+        prune the later one's row instead. And a failed write puts the
+        rows straight back under their own ids: the marks are still on
+        disk, and those rows are the only thing that can ever accept or
+        reject them again (the live document still carries the same ids
+        in its surviving marks).
+        """
+        rows = [revision for revision in self.project.revisions(self.current_id)
+                if revision.id in change_ids]
+        self.project.remove_revisions(list(change_ids))
+        if self.save_current():
+            return True
+        self.project.restore_revisions(rows)
+        return False
+
     def _resolve_all_changes(self, accept: bool) -> None:
         """Accept or reject every pending change in the open document.
         The editor is mutated first, the rows go, then one save writes
         the resolved form and its recomputed word count."""
         if not self.project or not self.current_id:
             return
-        self.save_current()
+        if not self.save_current():
+            return
         pending = self.project.revisions(self.current_id)
         if not pending:
             self.statusBar().showMessage("No pending changes in this section",
@@ -3050,8 +3283,8 @@ class MainWindow(QMainWindow):
             revisions.apply_accept(self.editor.document(), change_ids)
         else:
             revisions.apply_reject(self.editor.document(), change_ids)
-        self.project.remove_revisions(list(change_ids))
-        self.save_current()
+        if not self._drop_rows_then_save(change_ids):
+            return
         self._update_word_count()
         verb = "accepted" if accept else "rejected"
         self.statusBar().showMessage(
@@ -3061,7 +3294,8 @@ class MainWindow(QMainWindow):
         """Accept or reject one whole revision pass of this section."""
         if not self.project or not self.current_id:
             return
-        self.save_current()
+        if not self.save_current():
+            return
         sessions = self.project.revision_sessions(self.current_id)
         if not sessions:
             self.statusBar().showMessage("No pending changes in this section",
@@ -3084,8 +3318,8 @@ class MainWindow(QMainWindow):
             revisions.apply_accept(self.editor.document(), change_ids)
         else:
             revisions.apply_reject(self.editor.document(), change_ids)
-        self.project.remove_revisions(list(change_ids))
-        self.save_current()
+        if not self._drop_rows_then_save(change_ids):
+            return
         self._update_word_count()
         verb = "accepted" if dialog.chosen_accept else "rejected"
         self.statusBar().showMessage(
@@ -3222,12 +3456,23 @@ class MainWindow(QMainWindow):
             self._reader.stop()
         self._speech_paused = False
 
-    def save_current(self) -> None:
+    def save_current(self) -> bool:
+        """Write the open document through Project; False means it failed.
+
+        The return value is the contract that keeps a failed write from
+        costing the writer their text: a dialog has already explained the
+        failure, and every caller that would destroy or outlive the
+        in-memory copy — a document switch, a project switch, closing, a
+        backup, an export that reads stored HTML — has to stop rather than
+        carry on against stale disk state. Nothing to save (no project,
+        no document, mid-load) is a success, not a failure.
+        """
         if not self.project or not self.current_id or self.loading:
-            return
+            return True
         self.save_timer.stop()
         try:
-            html = self.project.canonicalize_links(self.editor.toHtml())
+            html = self.project.canonicalize_links(
+                scaled_font_sizes(self.editor.toHtml(), 1.0 / self.zoom))
             self.project.write_content(self.current_id, html)
             # Tracked changes (2.4): the stored HTML is the truth after
             # every save — undo can orphan rows by removing marks behind
@@ -3250,11 +3495,14 @@ class MainWindow(QMainWindow):
             self._refresh_outliner()
         except Exception as error:
             QMessageBox.critical(self, "Save failed", str(error))
+            return False
+        return True
 
     def manual_save(self) -> None:
         if not self.project:
             return
-        self.save_current()
+        if not self.save_current():
+            return          # the dialog has explained; no backup either
         try:
             destination = self.project.backup()
             self.statusBar().showMessage(
@@ -3378,7 +3626,7 @@ class MainWindow(QMainWindow):
         for item in self._all_items():
             if item.data(0, Qt.UserRole) == document_id:
                 self.tree.setCurrentItem(item)
-                self.views.setCurrentWidget(self.editor)
+                self.views.setCurrentWidget(self.editor_page)
                 self.editor.setFocus()
                 return
 
@@ -3422,16 +3670,120 @@ class MainWindow(QMainWindow):
     def add_scene(self) -> None:
         self._new_document("New Scene", "scene")
 
+    def _binder_path(self, document_id: str) -> str:
+        """'Series → Book → Chapter → Scene' — how a dialog names a target
+        unambiguously, which matters because titles may repeat (§ working
+        agreements: never by name alone)."""
+        if not self.project:
+            return ""
+        by_id = {document.id: document for document in self.project.documents()}
+        parts: list[str] = []
+        current = by_id.get(document_id)
+        while current is not None:
+            parts.append(current.title)
+            current = by_id.get(current.parent_id) if current.parent_id else None
+        return " → ".join(reversed(parts))
+
+    def _scratch_import(self, run_import) -> tuple[str, str] | None:
+        """Run an import into a throwaway project and measure what it makes.
+
+        Nothing real is written, which is what lets an import be stopped
+        without cleaning up afterwards (docs/IMPORTS.md). The measurement is
+        crude by design — folder names first, then the prose inside — which is
+        enough to tell "the same file again" from "a different draft that
+        happens to use the same folder names", and it serves all four
+        importers through one path.
+        """
+        root = Path(tempfile.mkdtemp(prefix="lekhak-import-check-"))
+        try:
+            scratch = Project.create(root / "check", "check")
+            try:
+                created = run_import(scratch)
+                if not created:
+                    return None
+                document = next((d for d in scratch.documents()
+                                 if d.id == created), None)
+                if document is None:
+                    return None
+                return scratch.subtree_fingerprint(created), document.title
+            finally:
+                scratch.close()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def _confirm_import(self, run_import) -> bool:
+        """True to go ahead, False to leave the project exactly as it was.
+
+        Identical content is reported before it is duplicated; a same-named
+        folder holding *different* content is a collision the writer should
+        hear about first. Neither case overwrites anything: a second import
+        lands as a numbered copy, and the merge/skip walkthrough is still to
+        come (docs/IMPORTS.md).
+        """
+        try:
+            measured = self._scratch_import(run_import)
+        except Exception:
+            return True     # the real run raises where the writer can see it
+        if measured is None:
+            return True
+        fingerprint, title = measured
+        existing = self.project.find_child_folder(title, None)
+        if existing is None:
+            return True
+        if self.project.subtree_fingerprint(existing.id) == fingerprint:
+            answer = QMessageBox.warning(
+                self, "Already imported",
+                f"This is the same content as ‘{existing.title}’, which the "
+                "project already holds.\n\nImport a second, separate copy "
+                "anyway?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            return answer == QMessageBox.Yes
+        answer = QMessageBox.question(
+            self, "Same name, different content",
+            f"‘{existing.title}’ is already in the project, with different "
+            f"content.\n\nThe import will land beside it as ‘{title} (2)’. "
+            "Nothing already here is touched. Continue?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        return answer == QMessageBox.Yes
+
     def delete_section(self) -> None:
         if not self.project or not self.current_id:
             return
-        answer = QMessageBox.question(
-            self, "Delete section", "Delete this section and all of its children?"
-        )
-        if answer == QMessageBox.Yes:
-            self.project.delete_document(self.current_id)
-            self.current_id = None
-            self._reload_tree()
+        documents = self.project.documents()
+        document = next((d for d in documents if d.id == self.current_id), None)
+        if document is None:
+            return
+        parents = {d.id: d.parent_id for d in documents}
+
+        def beneath(candidate_id: str) -> bool:
+            current = parents.get(candidate_id)
+            while current is not None:
+                if current == document.id:
+                    return True
+                current = parents.get(current)
+            return False
+
+        children = [d for d in documents if beneath(d.id)]
+        words = document.word_count + sum(d.word_count for d in children)
+        detail = "\n".join(f"{d.kind}: {d.title}" for d in children[:50])
+        if len(children) > 50:
+            detail += f"\n… and {len(children) - 50} more"
+        if not confirm_destructive(
+            self, "Delete section",
+            f"Delete ‘{document.title}’"
+            + (f" and the {len(children)} item(s) inside it?" if children else "?"),
+            confirm="Delete",
+            checkbox=(f"{self._binder_path(document.id)}\n\n{words:,} words in "
+                      "all. The last backup still holds a copy; this project "
+                      "will not."),
+            detail=detail,
+        ):
+            return
+        self.project.delete_document(self.current_id)
+        self.current_id = None
+        self._reload_tree()
 
     def search(self) -> None:
         if not self.project:
@@ -3454,7 +3806,8 @@ class MainWindow(QMainWindow):
     def create_snapshot(self) -> None:
         if not self.project or not self.current_id:
             return
-        self.save_current()
+        if not self.save_current():
+            return
         name, accepted = QInputDialog.getText(self, "Create snapshot", "Snapshot name:")
         if accepted and name.strip():
             self.project.create_snapshot(self.current_id, name.strip())
@@ -3500,21 +3853,32 @@ class MainWindow(QMainWindow):
         if not accepted:
             return
         index = labels.index(selected)
-        answer = QMessageBox.question(
+        if not confirm_destructive(
             self, "Restore snapshot",
-            "Replace the current section with this snapshot? The current version will be preserved.",
-        )
-        if answer == QMessageBox.Yes:
-            self.save_current()
-            self.project.restore_snapshot(snapshots[index].id)
-            current = self.tree.currentItem()
-            self._selection_changed(current, current)
-            self.statusBar().showMessage("Snapshot restored", 3000)
+            f"Replace the open section with the snapshot "
+            f"‘{snapshots[index].name}’?",
+            confirm="Restore",
+            checkbox=(f"{self._binder_path(self.current_id)}\n\nThe stored "
+                      "text is overwritten with the snapshot's. The version "
+                      "open now is snapshotted first, so it can be found "
+                      "again in this list."),
+            detail=labels[index],
+        ):
+            return
+        # restore_snapshot overwrites the open document, and the promise that
+        # the current version survives depends on this save actually landing.
+        if not self.save_current():
+            return
+        self.project.restore_snapshot(snapshots[index].id)
+        current = self.tree.currentItem()
+        self._selection_changed(current, current)
+        self.statusBar().showMessage("Snapshot restored", 3000)
 
     def split_section(self) -> None:
         if not self.project or not self.current_id:
             return
-        self.save_current()
+        if not self.save_current():
+            return
         document = self.editor.document()
         position = self.editor.textCursor().position()
         first = QTextCursor(document)
@@ -3548,19 +3912,30 @@ class MainWindow(QMainWindow):
     def merge_with_next(self) -> None:
         if not self.project or not self.current_id:
             return
-        self.save_current()
+        if not self.save_current():
+            return
         following = self.project.next_sibling(self.current_id)
         if following is None:
             QMessageBox.information(
                 self, "Merge Sections", "No following sibling to merge with.")
             return
-        answer = QMessageBox.question(
-            self, "Merge Sections",
-            f"Append ‘{following.title}’ to the end of this section and "
-            "remove it?\n\nThis section is snapshotted first; the other "
-            "section's metadata is dropped.",
-        )
-        if answer != QMessageBox.Yes:
+        document = next((d for d in self.project.documents()
+                         if d.id == self.current_id), None)
+        if document is None:
+            return
+        dropped = sorted(self.project.metadata_entries(following.id))
+        lost = (f"‘{following.title}’s metadata ({', '.join(dropped)}) is "
+                "dropped" if dropped else "no metadata is dropped")
+        if not confirm_destructive(
+            self, "Merge sections",
+            f"Append ‘{following.title}’ to ‘{document.title}’ and remove it "
+            "from the binder?",
+            confirm="Merge",
+            checkbox=(f"{self._binder_path(following.id)}\n\ninto "
+                      f"{self._binder_path(document.id)}\n\nA snapshot of "
+                      f"‘{document.title}’ is taken first and its history "
+                      f"moves across, but {lost}."),
+        ):
             return
         try:
             merged = self.project.merge_documents(self.current_id, following.id)
@@ -3585,7 +3960,10 @@ class MainWindow(QMainWindow):
     def export(self, kind: str) -> None:
         if not self.project:
             return
-        self.save_current()
+        # Exports read stored HTML, so unsaved editor text makes the file
+        # wrong; a failed save cancels the export.
+        if not self.save_current():
+            return
         # Raw scope from both trees (2.1): folders expand and book
         # chrome fires at compile time; None means the whole project.
         raw_ids = self._gather_export_selection()
@@ -3680,45 +4058,22 @@ class MainWindow(QMainWindow):
                     self, "Import", "No books found in that dump."
                 )
                 return
-            self.save_current()
+            if not self.save_current():
+                return
+
+            def run(project):
+                wrapper, books = import_all_books(project, raw_documents)
+                return wrapper or (books[0] if books else None)
+
+            if not self._confirm_import(run):
+                return
             wrapper_id, books = import_all_books(self.project, raw_documents)
         except Exception as error:
             QMessageBox.critical(self, "Import failed", str(error))
             return
         self._reload_tree(select_id=wrapper_id or books[0])
         self.statusBar().showMessage(
-            f"Imported {len(books)} books from {Path(path).name}", 5000
-        )
-
-    def import_scrivener_dump_new_project(self) -> None:
-        """Import every book in a dump as a brand new project (2.3)."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import Scrivener dump", "", "Scrivener dump (*.md)"
-        )
-        if not path:
-            return
-        title, accepted = QInputDialog.getText(
-            self, "Project title", "Title:", text=Path(path).stem
-        )
-        if not accepted or not title.strip():
-            return
-        selected = QFileDialog.getExistingDirectory(
-            self, "Choose location for the new project"
-        )
-        if not selected:
-            return
-        try:
-            project = Project.create(Path(selected) / title.strip(), title.strip())
-            raw_documents = parse_dump(Path(path))
-            wrapper_id, books = import_all_books(project, raw_documents)
-            self._switch_project(project)
-            self._reload_tree(select_id=wrapper_id or (books[0] if books else None))
-        except Exception as error:
-            QMessageBox.critical(self, "Could not import project", str(error))
-            return
-        self.statusBar().showMessage(
-            f"Imported {len(books)} books into {title.strip()}", 5000
-        )
+            f"Imported {len(books)} books from {Path(path).name}", 8000)
 
     def import_markdown_file(self) -> None:
         """Import one plain markdown file into the open project (2.3).
@@ -3733,44 +4088,24 @@ class MainWindow(QMainWindow):
             return
         path = dialog.chosen_path()
         try:
-            self.save_current()
-            folder_id = import_markdown_file(
-                self.project, path,
-                book_title=dialog.title_edit.text(),
-                chapter_divider=dialog.chapter_edit.text(),
-                scene_divider=dialog.scene_edit.text(),
-            )
+            if not self.save_current():
+                return
+            def run(project):
+                return import_markdown_file(
+                    project, path,
+                    book_title=dialog.title_edit.text(),
+                    chapter_divider=dialog.chapter_edit.text(),
+                    scene_divider=dialog.scene_edit.text(),
+                )
+
+            if not self._confirm_import(run):
+                return
+            folder_id = run(self.project)
         except Exception as error:
             QMessageBox.critical(self, "Import failed", str(error))
             return
         self._reload_tree(select_id=folder_id)
-        self.statusBar().showMessage(f"Imported {Path(path).name}", 5000)
-
-    def import_markdown_file_new_project(self) -> None:
-        """Import one plain markdown file as a brand new project (2.3)."""
-        dialog = ImportMarkdownDialog(self)
-        if dialog.exec() != QDialog.Accepted:
-            return
-        path = dialog.chosen_path()
-        title = dialog.title_edit.text().strip() or path.stem
-        selected = QFileDialog.getExistingDirectory(
-            self, "Choose location for the new project")
-        if not selected:
-            return
-        try:
-            project = Project.create(Path(selected) / title, title)
-            folder_id = import_markdown_file(
-                project, path, book_title=title,
-                chapter_divider=dialog.chapter_edit.text(),
-                scene_divider=dialog.scene_edit.text(),
-            )
-            self._switch_project(project)
-            self._reload_tree(select_id=folder_id)
-        except Exception as error:
-            QMessageBox.critical(self, "Could not import project",
-                                 str(error))
-            return
-        self.statusBar().showMessage(f"Imported into {title}", 5000)
+        self.statusBar().showMessage(f"Imported {Path(path).name}", 8000)
 
     def import_ywriter(self) -> None:
         """Import a yWriter 7 project into the open project (2.3)."""
@@ -3781,45 +4116,19 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            self.save_current()
-            folder_id = import_yw7(self.project, Path(path))
+            if not self.save_current():
+                return
+            def run(project):
+                return import_yw7(project, Path(path))
+
+            if not self._confirm_import(run):
+                return
+            folder_id = run(self.project)
         except Exception as error:
             QMessageBox.critical(self, "Import failed", str(error))
             return
         self._reload_tree(select_id=folder_id)
-        self.statusBar().showMessage(f"Imported {Path(path).name}", 5000)
-
-    def import_ywriter_new_project(self) -> None:
-        """Import a yWriter 7 project as a brand new project (2.3)."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import yWriter project", "", "yWriter 7 (*.yw7)")
-        if not path:
-            return
-        try:
-            parsed = parse_yw7(Path(path))
-        except Exception as error:
-            QMessageBox.critical(self, "Import failed", str(error))
-            return
-        title, accepted = QInputDialog.getText(
-            self, "Project title", "Title:",
-            text=parsed.title or Path(path).stem)
-        if not accepted or not title.strip():
-            return
-        selected = QFileDialog.getExistingDirectory(
-            self, "Choose location for the new project")
-        if not selected:
-            return
-        try:
-            project = Project.create(Path(selected) / title.strip(),
-                                     title.strip())
-            folder_id = import_yw7(project, Path(path), title=title.strip())
-            self._switch_project(project)
-            self._reload_tree(select_id=folder_id)
-        except Exception as error:
-            QMessageBox.critical(self, "Could not import project",
-                                 str(error))
-            return
-        self.statusBar().showMessage(f"Imported into {title.strip()}", 5000)
+        self.statusBar().showMessage(f"Imported {Path(path).name}", 8000)
 
     def import_scrivener(self) -> None:
         """Import a Scrivener 3 project into the open project (2.3)."""
@@ -3830,46 +4139,19 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            self.save_current()
-            folder_id = import_scriv(self.project, Path(path))
+            if not self.save_current():
+                return
+            def run(project):
+                return import_scriv(project, Path(path))
+
+            if not self._confirm_import(run):
+                return
+            folder_id = run(self.project)
         except Exception as error:
             QMessageBox.critical(self, "Import failed", str(error))
             return
         self._reload_tree(select_id=folder_id)
-        self.statusBar().showMessage(f"Imported {Path(path).name}", 5000)
-
-    def import_scrivener_new_project(self) -> None:
-        """Import a Scrivener 3 project as a brand new project (2.3)."""
-        path = QFileDialog.getExistingDirectory(
-            self, "Import Scrivener project (.scriv folder)")
-        if not path:
-            return
-        try:
-            parsed = parse_scriv(Path(path))
-        except Exception as error:
-            QMessageBox.critical(self, "Import failed", str(error))
-            return
-        title, accepted = QInputDialog.getText(
-            self, "Project title", "Title:",
-            text=parsed.title or Path(path).stem)
-        if not accepted or not title.strip():
-            return
-        selected = QFileDialog.getExistingDirectory(
-            self, "Choose location for the new project")
-        if not selected:
-            return
-        try:
-            project = Project.create(Path(selected) / title.strip(),
-                                     title.strip())
-            folder_id = import_scriv(project, Path(path),
-                                     title=title.strip())
-            self._switch_project(project)
-            self._reload_tree(select_id=folder_id)
-        except Exception as error:
-            QMessageBox.critical(self, "Could not import project",
-                                 str(error))
-            return
-        self.statusBar().showMessage(f"Imported into {title.strip()}", 5000)
+        self.statusBar().showMessage(f"Imported {Path(path).name}", 8000)
 
     def bold(self) -> None:
         fmt = QTextCharFormat()
@@ -3892,13 +4174,18 @@ class MainWindow(QMainWindow):
         except ValueError:
             return
         if 6 <= size <= 144:
-            self.editor.setFontPointSize(size)
+            # The box asks for a *document* size; the live document runs
+            # at stored sizes × zoom, so the display gets the product.
+            self.editor.setFontPointSize(size * self.zoom)
 
     def apply_paragraph_style(self, index: int) -> None:
         style = self._styles.get(self.style_box.itemData(index))
         if style is None:
             return
-        block_format, char_format = style_signature_formats(style)
+        scaled = dict(style)
+        if "size" in scaled:
+            scaled["size"] = round(float(scaled["size"]) * self.zoom, 2)
+        block_format, char_format = style_signature_formats(scaled)
         cursor = self.editor.textCursor()
         cursor.mergeBlockFormat(block_format)
         cursor.mergeCharFormat(char_format)
@@ -3944,6 +4231,19 @@ class MainWindow(QMainWindow):
                                  json.dumps(self._user_styles, indent=1))
         return True
 
+    def _capture_signature(self) -> dict:
+        """The caret paragraph's style signature in *stored* units.
+
+        capture_paragraph_signature reads the live formats, which carry
+        display sizes (×zoom); a style is stored, so the factor is divided
+        back out here — saving, updating and matching a style then all
+        speak the same numbers, at any zoom.
+        """
+        signature = capture_paragraph_signature(self.editor.textCursor())
+        if "size" in signature:
+            signature["size"] = round(float(signature["size"]) / self.zoom, 2)
+        return signature
+
     def save_style_from_cursor(self, name: str) -> bool:
         """Create: capture the paragraph under the caret under a new name.
 
@@ -3953,7 +4253,7 @@ class MainWindow(QMainWindow):
         name = name.strip()
         if not self.project or not name or name in self._styles:
             return False
-        self._user_styles[name] = capture_paragraph_signature(self.editor.textCursor())
+        self._user_styles[name] = self._capture_signature()
         self._refresh_styles()
         self._persist_styles()
         return True
@@ -3962,7 +4262,7 @@ class MainWindow(QMainWindow):
         """Update: the named style's signature becomes the paragraph's now."""
         if not self.project or name not in self._styles:
             return False
-        self._user_styles[name] = capture_paragraph_signature(self.editor.textCursor())
+        self._user_styles[name] = self._capture_signature()
         self._refresh_styles()
         self._persist_styles()
         return True
@@ -3984,7 +4284,7 @@ class MainWindow(QMainWindow):
         never mentions alignment or family) matches the very paragraph it
         just formatted even though the capture recorded more.
         """
-        captured = capture_paragraph_signature(self.editor.textCursor())
+        captured = self._capture_signature()
         for name, style in self._styles.items():
             if all(captured.get(key) == value for key, value in style.items()):
                 return name
@@ -4068,7 +4368,7 @@ class MainWindow(QMainWindow):
     def clear_formatting(self) -> None:
         cursor = self.editor.textCursor()
         fmt = QTextCharFormat()
-        fmt.setFontPointSize(12)
+        fmt.setFontPointSize(ZOOM_ANCHOR_PT * self.zoom)
         cursor.mergeCharFormat(fmt)
         cursor.setBlockFormat(QTextBlockFormat())
         self.editor.setTextCursor(cursor)
@@ -4133,7 +4433,11 @@ class MainWindow(QMainWindow):
     def replace_in_project(self) -> None:
         if not self.project:
             return
-        self.save_current()
+        # Replace writes the stored files; letting it run after a failed
+        # save would leave the editor holding pre-replace text that the
+        # next successful save would write back over the replacements.
+        if not self.save_current():
+            return
         dialog = ProjectReplaceDialog(self.project, on_goto=self._select_document,
                                       parent=self)
         dialog.exec()
@@ -4145,10 +4449,99 @@ class MainWindow(QMainWindow):
         dialog.find_text.setFocus()
         self._find_dialog = dialog
 
-    def reset_zoom(self) -> None:
+    # --- editor zoom (display only) ----------------------------------------
+    # The live document is rendered at stored sizes × self.zoom. Nothing
+    # here may reach a file: save_current() and _refresh_page_preview()
+    # divide the factor back out, and every method that turns live formats
+    # into stored ones (a style signature, a pasted fragment) undoes it too.
+
+    def _apply_zoom_base(self) -> None:
+        """Point the editor's own font, and its display scale, at the zoom.
+
+        The base font is what an unformatted paragraph inherits, so it has
+        to carry the factor as well — otherwise newly typed text would sit
+        at the stored size while everything around it is magnified.
+        """
         font = self.editor.font()
-        font.setPointSize(12)
+        font.setPointSizeF(ZOOM_ANCHOR_PT * self.zoom)
         self.editor.setFont(font)
+        self.editor.display_scale = self.zoom
+        if hasattr(self, "zoom_label"):     # built after the window body
+            self.zoom_label.setText(f"{round(self.zoom * 100)}%")
+
+    def _rescale_editor(self, ratio: float) -> None:
+        """Scale the live document's explicit sizes by ``ratio``, in place.
+
+        In place rather than by reloading stored HTML, so unsaved edits,
+        the caret and the undo history all survive a zoom change — a
+        reload would throw away every one of them. Text that inherits the
+        base font is not touched here; _apply_zoom_base moves that.
+        """
+        if ratio == 1.0:
+            return
+        document = self.editor.document()
+        cursor = QTextCursor(document)
+        cursor.beginEditBlock()
+        block = document.firstBlock()
+        while block.isValid():
+            fragment = block.begin()
+            while not fragment.atEnd():
+                item = fragment.fragment()
+                if (item.isValid()
+                        and item.charFormat().objectType() == QTextFormat.NoObject):
+                    size = item.charFormat().fontPointSize()
+                    if size > 0:
+                        fmt = QTextCharFormat(item.charFormat())
+                        fmt.setFontPointSize(round(size * ratio, 2))
+                        cursor.setPosition(item.position())
+                        cursor.setPosition(item.position() + item.length(),
+                                           QTextCursor.KeepAnchor)
+                        cursor.setCharFormat(fmt)
+                fragment += 1
+            block = block.next()
+        cursor.endEditBlock()
+
+    def set_zoom(self, value: float) -> None:
+        """Set the display zoom, and remember it as session state (1.9).
+
+        Zoom is a property of the writing session, not of the manuscript:
+        it travels with the project the way last_document and last_cursor
+        do, and it is divided out again before anything is stored.
+        """
+        value = min(max(round(value, 2), ZOOM_MIN), ZOOM_MAX)
+        if value == self.zoom:
+            return
+        self._rescale_editor(value / self.zoom)
+        self.zoom = value
+        self._apply_zoom_base()
+        self.page_view.set_user_scale(value)
+        if self.project:
+            self.project.set_setting("editor_zoom", f"{value:.2f}")
+        self._refresh_page_preview()
+        self.statusBar().showMessage(f"Zoom {round(value * 100)}%", 1500)
+
+    def zoom_by(self, delta: float) -> None:
+        self.set_zoom(self.zoom + delta)
+
+    def zoom_in(self) -> None:
+        self.zoom_by(ZOOM_STEP)
+
+    def zoom_out(self) -> None:
+        self.zoom_by(-ZOOM_STEP)
+
+    def reset_zoom(self) -> None:
+        self.set_zoom(1.0)
+
+    def _load_zoom(self) -> None:
+        """Restore the zoom the project was last left at (session state)."""
+        raw = self.project.get_setting("editor_zoom", "1") if self.project else "1"
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 1.0     # hand-edited settings may be junk; 100% still works
+        self.zoom = min(max(round(value, 2), ZOOM_MIN), ZOOM_MAX)
+        self._apply_zoom_base()
+        self.page_view.set_user_scale(self.zoom)
 
     def toggle_focus_mode(self) -> None:
         self.focus_mode = not self.focus_mode
@@ -4159,7 +4552,7 @@ class MainWindow(QMainWindow):
             toolbar.setVisible(not self.focus_mode)
         self.statusBar().setVisible(not self.focus_mode)
         if self.focus_mode:
-            self.views.setCurrentWidget(self.editor)
+            self.views.setCurrentWidget(self.editor_page)
             self.editor.setFocus()
 
     def _update_word_count(self) -> None:
@@ -4185,7 +4578,16 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.stop_speech()
-        self.save_current()
+        if not self.save_current():
+            answer = QMessageBox.warning(
+                self, "Save failed",
+                "Your latest changes could not be written to disk.\n\n"
+                "Quit anyway and lose them?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                event.ignore()
+                return
         if self.project:
             self.project.close()
         event.accept()

@@ -7,8 +7,9 @@ name = "lekhak"
 version = "0.1.0"
 description = "A reliable, Linux-first environment for long-form writing"
 # Floor is 3.9 by policy (see ROADMAP working agreements): the code only
-# needs str.removeprefix (3.9); every X | None annotation is lazy thanks to
-# `from __future__ import annotations`. pip resolves a matching PySide6.
+# needs str.removeprefix (3.9), and every module starts with
+# `from __future__ import annotations`, so no X | None annotation is
+# evaluated at import. pip resolves a matching PySide6.
 requires-python = ">=3.9"
 # Stated as a classifier rather than a PEP 639 SPDX string: that form needs
 # setuptools 77+, and the build requirement admits 68. The licence text

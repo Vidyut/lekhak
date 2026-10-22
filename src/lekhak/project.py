@@ -30,7 +30,10 @@ taken before destructive operations (split, merge, restore) so any of
 them can be reversed.
 """
 
+from __future__ import annotations
+
 import os
+import hashlib
 import json
 import re
 import shutil
@@ -51,6 +54,10 @@ TAG_RE = re.compile(r"<[^>]+>")
 # document would count ~19 phantom words ("p, li { white-space …") and
 # leak the same lines into text exports and search.
 STYLE_RE = re.compile(r"<style\b[^>]*>.*?</style>", re.I | re.S)
+# Backup directory names this app creates (datetime "%Y%m%d-%H%M%S-%f").
+# Pruning matches this exactly so a writer's own folders in a
+# writer-chosen backup directory are never mistaken for our old backups.
+BACKUP_STAMP_RE = re.compile(r"\d{8}-\d{6}-\d{6}")
 
 # Kinds are labels, not structure: any item may contain any other, at any
 # depth, and several items may share the top level. Folder is a neutral
@@ -59,7 +66,11 @@ DOCUMENT_KINDS = {"folder", "chapter", "scene", "note"}
 # How a document may demand to start on a page (1.6). "right" is recto
 # and "next-odd" the literal parity phrasing — both emit the same DOCX
 # ODD_PAGE section, as the user chose; likewise left/next-even.
-PAGE_BREAK_VALUES = ("auto", "left", "right", "next-odd", "next-even")
+# "auto" inherits (the document, then each ancestor folder) and falls back to
+# a new page per document; "flow" runs on regardless; the parity values demand
+# a recto/verso start, which is only meaningful once a print trim is set.
+PAGE_BREAK_VALUES = ("auto", "flow", "page", "left", "right", "next-odd",
+                     "next-even")
 # Kinds that contribute prose to a compile by default. Book-level compile
 # settings will override this per document later; folders and notes stay out.
 EXPORT_KINDS = {"chapter", "scene"}
@@ -88,11 +99,18 @@ PAGE_TRIMS: dict[str, tuple[str, float, float]] = {
     "8.25x11": ("8.25 × 11", 8.25, 11.0),
 }
 
+# The paper an export gets when nothing is configured (Phase 1): A4, because
+# it is the ISO standard almost everywhere outside the USA and Canada, and
+# Letter was never a decision — it was python-docx's template. Real books set
+# a trim in Page setup, which overrides this entirely.
 DEFAULT_PAGE_SETUP: dict = {
-    "trim": "letter",
-    "width": 8.5, "height": 11.0,
-    "top": 0.5, "bottom": 0.5, "inside": 0.5, "outside": 0.5,
-    "mirror": True,
+    "trim": "a4",
+    "width": 8.27, "height": 11.69,
+    "top": 1.0, "bottom": 1.0, "inside": 1.0, "outside": 1.0,
+    # Not mirrored: a plain A4 export is not necessarily a bound book, and
+    # equal margins make mirroring invisible anyway. A trim set in Page
+    # setup carries the book's real mirroring.
+    "mirror": False,
     "gutter": 0.0,
 }
 
@@ -423,11 +441,15 @@ class Project:
             )
         # Migration: earlier versions seeded "Draft" as a chapter; it is a
         # neutral folder now. Only touch the seeded root, never user content.
-        self.connection.execute(
-            "UPDATE documents SET kind='folder' "
-            "WHERE title='Draft' AND parent_id IS NULL AND kind='chapter'"
-        )
-        self.connection.commit()
+        # The query cannot tell the seed from a chapter somebody *named*
+        # "Draft", so it runs once and says so — otherwise it would rewrite
+        # that writer's deliberate choice on every single open.
+        if self.get_setting("draft_folder_migration") != "1":
+            self.connection.execute(
+                "UPDATE documents SET kind='folder' "
+                "WHERE title='Draft' AND parent_id IS NULL AND kind='chapter'"
+            )
+            self.set_setting("draft_folder_migration", "1")
         if self.get_setting("word_count_backfill") != "1":
             for row in self.connection.execute("SELECT id FROM documents").fetchall():
                 count = len(self.plain_text(self.read_content(row[0])).split())
@@ -477,9 +499,11 @@ class Project:
                      kind: str = "scene") -> Document:
         """Create a document as the last child of ``parent_id``.
 
-        Appends at the end of the sibling order (position = max + 1) and
-        writes an empty content file so the row and the file stay in step
-        from the moment the document exists.
+        Appends at the end of the sibling order (position = max + 1). The
+        empty content file is written *before* the row: an orphan file for
+        an id nothing references is invisible, whereas a row whose file is
+        missing reads as an empty document — so if storage fails, this is
+        the harmless of the two states.
         """
         if kind not in DOCUMENT_KINDS:
             raise ValueError(f"Unknown document kind: {kind}")
@@ -491,14 +515,78 @@ class Project:
             (parent_id,),
         ).fetchone()
         position = int(row[0])
-        self.db.execute(
-            "INSERT INTO documents(id,parent_id,title,position,kind,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (document_id, parent_id, title, position, kind, now, now),
-        )
-        self.db.commit()
         self.write_content(document_id, "")
+        try:
+            self.db.execute(
+                "INSERT INTO documents(id,parent_id,title,position,kind,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (document_id, parent_id, title, position, kind, now, now),
+            )
+            self.db.commit()
+        except BaseException:
+            self.content_path(document_id).unlink(missing_ok=True)
+            raise
         return Document(document_id, parent_id, title, "", position, 0, kind, 0)
+
+    def find_child_folder(self, title: str, parent_id: str | None = None) -> Document | None:
+        """The child folder of ``parent_id`` with this title, or None.
+
+        Case-insensitive and stripped, because a folder name is a name, not a
+        key — but only a *lookup*: callers decide what a collision means
+        (imports ask; see ``place_imported_folder``).
+        """
+        needle = title.strip().casefold()
+        if not needle:
+            return None
+        for document in self.documents():
+            if (document.parent_id == parent_id and document.kind == "folder"
+                    and document.title.strip().casefold() == needle):
+                return document
+        return None
+
+    def unique_title(self, title: str, parent_id: str | None = None) -> str:
+        """"Book", then "Book (2)", "Book (3)" — the file-manager convention.
+
+        Only the importers use this, and only for containers (folders and
+        chapters): an import must never land on top of an existing same-named
+        container, and when the writer chooses "keep separate" this is what
+        keeps both. Documents keep their titles — repeating a scene title is
+        ordinary, and imports have no business renaming prose.
+        """
+        taken = {document.title.strip().casefold() for document in self.documents()
+                 if document.parent_id == parent_id}
+        base = title.strip() or "Untitled"
+        if base.casefold() not in taken:
+            return base
+        number = 2
+        while f"{base} ({number})".casefold() in taken:
+            number += 1
+        return f"{base} ({number})"
+
+    def subtree_fingerprint(self, document_id: str) -> str:
+        """A crude content fingerprint: every descendant's depth, title and
+        plain text, in binder order.
+
+        Crude is the point (author's rule): imports compare folders by name
+        and, when the names line up, by what is inside — enough to tell "the
+        same file again" from "a different draft with the same folder names".
+        """
+        by_parent: dict[str | None, list[Document]] = {}
+        for document in self.documents():
+            by_parent.setdefault(document.parent_id, []).append(document)
+        digest = hashlib.sha256()
+
+        def walk(parent_id: str | None, depth: int) -> None:
+            for document in sorted(by_parent.get(parent_id, []),
+                                   key=lambda d: d.position):
+                digest.update(f"{depth}\x1f{document.title}\x1f".encode("utf-8"))
+                digest.update(
+                    self.plain_text(self.read_content(document.id)).encode("utf-8"))
+                digest.update(b"\x1e")
+                walk(document.id, depth + 1)
+
+        walk(document_id, 0)
+        return digest.hexdigest()
 
     def documents(self) -> list[Document]:
         """Every document in binder order: parents before children, siblings by position.
@@ -672,19 +760,29 @@ class Project:
 
         new_id = uuid.uuid4().hex
         now = datetime.now(timezone.utc).isoformat()
-        with self.db:
-            self.db.execute(
-                "UPDATE documents SET position=position+1 "
-                "WHERE parent_id IS ? AND position>?",
-                (parent_id, position),
-            )
-            self.db.execute(
-                "INSERT INTO documents(id,parent_id,title,position,kind,"
-                "created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                (new_id, parent_id, new_title, position + 1, kind, now, now),
-            )
-        self.write_content(document_id, before_html)
+        # Only one of these three steps can fail, so the order decides what
+        # a failure leaves behind: the new file first (an orphan is
+        # invisible), then the rows, then the original's file last — which
+        # is what keeps its previous text intact until everything else has
+        # landed. Worst case is duplicated text, never lost text, and the
+        # snapshot above still holds the pre-split version.
         self.write_content(new_id, after_html)
+        try:
+            with self.db:
+                self.db.execute(
+                    "UPDATE documents SET position=position+1 "
+                    "WHERE parent_id IS ? AND position>?",
+                    (parent_id, position),
+                )
+                self.db.execute(
+                    "INSERT INTO documents(id,parent_id,title,position,kind,"
+                    "created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                    (new_id, parent_id, new_title, position + 1, kind, now, now),
+                )
+        except BaseException:
+            self.content_path(new_id).unlink(missing_ok=True)
+            raise
+        self.write_content(document_id, before_html)
         return Document(new_id, parent_id, new_title, "", position + 1, 0, kind, 0)
 
     def merge_documents(self, first_id: str, second_id: str) -> Document:
@@ -714,14 +812,18 @@ class Project:
                 "The following section contains sub-documents; move them out first."
             )
         self.create_snapshot(first_id, "Before merge")
+        combined = self._join_html(self.read_content(first_id),
+                                   self.read_content(second_id))
+        # The combined text lands before anything else moves: if it cannot
+        # be written, the merge simply did not happen. The history is
+        # re-homed before the row goes, because deleting the row cascades
+        # and would take the second document's snapshots with it.
+        self.write_content(first_id, combined)
         with self.db:
             self.db.execute(
                 "UPDATE snapshots SET document_id=? WHERE document_id=?",
                 (first_id, second_id),
             )
-        combined = self._join_html(self.read_content(first_id),
-                                   self.read_content(second_id))
-        self.write_content(first_id, combined)
         self.delete_document(second_id)
         row = self.db.execute(
             "SELECT id,parent_id,title,synopsis,position,word_target,kind,"
@@ -1033,30 +1135,42 @@ class Project:
         ]
         counts = {"replacements": 0, "documents": 0, "titles": 0, "synopses": 0}
         insert = (lambda _match: replacement) if not regex else replacement
+        # Plan first, write second. Replace spans many files with no
+        # transaction across them, so the only rollback path is a
+        # snapshot — and planning first means a document that turns out
+        # not to change gets no snapshot and no write.
+        planned = []
         for document in targets:
-            touched = False
             html = self.read_content(document.id)
             replaced, count = compiled.subn(insert, html)
+            new_title = None
+            title_count = 0
+            if in_titles and compiled.search(document.title):
+                new_title, title_count = compiled.subn(insert, document.title)
+            new_synopsis = None
+            synopsis_count = 0
+            if in_synopses and compiled.search(document.synopsis):
+                new_synopsis, synopsis_count = compiled.subn(
+                    insert, document.synopsis)
+            if count or title_count or synopsis_count:
+                planned.append((document, replaced, count, new_title,
+                                title_count, new_synopsis, synopsis_count))
+        for document, *_rest in planned:
+            self.create_snapshot(document.id, "Before replace")
+        for (document, replaced, count, new_title, title_count,
+             new_synopsis, synopsis_count) in planned:
             if count:
                 self.write_content(document.id, replaced)
                 counts["replacements"] += count
-                touched = True
-            if in_titles and compiled.search(document.title):
-                new_title, count = compiled.subn(insert, document.title)
-                if count:
-                    self.update_document(document.id, title=new_title)
-                    counts["titles"] += count
-                    counts["replacements"] += count
-                    touched = True
-            if in_synopses and compiled.search(document.synopsis):
-                new_synopsis, count = compiled.subn(insert, document.synopsis)
-                if count:
-                    self.update_document(document.id, synopsis=new_synopsis)
-                    counts["synopses"] += count
-                    counts["replacements"] += count
-                    touched = True
-            if touched:
-                counts["documents"] += 1
+            if title_count:
+                self.update_document(document.id, title=new_title)
+                counts["titles"] += title_count
+                counts["replacements"] += title_count
+            if synopsis_count:
+                self.update_document(document.id, synopsis=new_synopsis)
+                counts["synopses"] += synopsis_count
+                counts["replacements"] += synopsis_count
+            counts["documents"] += 1
         return counts
 
     def metadata(self, document_id: str) -> dict[str, str]:
@@ -1471,6 +1585,27 @@ class Project:
             "DELETE FROM revisions WHERE id=?", [(rid,) for rid in revision_ids])
         self.db.commit()
 
+    def restore_revisions(self, rows: list[Revision]) -> None:
+        """Put rows back after a failed write, under their own ids.
+
+        Accept/reject deletes the rows and then writes the resolved text;
+        if that write fails, the marks are still on disk and the rows are
+        the only thing that can ever address them. Same ids, not fresh
+        ones: the live document still carries the old ids in its marks,
+        and a new id would make the next accept look for a mark that
+        cannot exist.
+        """
+        for revision in rows:
+            self.db.execute(
+                "INSERT INTO revisions"
+                "(id,document_id,session_id,kind,author,created_at,sequence)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (revision.id, revision.document_id, revision.session_id,
+                 revision.kind, revision.author, revision.created_at,
+                 revision.sequence),
+            )
+        self.db.commit()
+
     def reconcile_revisions(self, document_id: str) -> None:
         """Drop pending rows whose marks no longer exist (2.4).
 
@@ -1804,8 +1939,44 @@ class Project:
         if not isinstance(page_setup, dict):
             page_setup = {}
         policy = self.get_setting("link_policy")
+        # Page starts (Phase 1): resolved once, here, so every exporter agrees.
+        # An explicit setting wins nearest-first (document, then ancestors);
+        # what is left over is a new page per document, which is the baseline
+        # the author asked for — "no point mind-reading users".
+        by_id = {document.id: document for document in all_docs}
+        containers = {document.parent_id for document in all_docs}
+
+        def has_trim(document) -> bool:
+            """True when a real print trim governs this document — the
+            condition the author set for recto chapter openers."""
+            current: str | None = document.id
+            while current is not None:
+                if current in page_setup and clean_page_setup(page_setup[current]):
+                    return True
+                current = parent_map.get(current)
+            return False
+
+        breaks: dict[str, str] = {}
+        for document in export_docs:
+            value = "auto"
+            current: str | None = document.id
+            while current is not None:
+                candidate = by_id[current].page_break if current in by_id else "auto"
+                if candidate in PAGE_BREAK_VALUES and candidate != "auto":
+                    value = candidate
+                    break
+                current = parent_map.get(current)
+            if value == "auto":
+                # A book's chapters (and its other containers) open recto once
+                # a print trim is set; everything else simply starts a page.
+                value = ("right" if has_trim(document)
+                         and (document.kind == "chapter"
+                              or document.id in containers)
+                         else "page")
+            breaks[document.id] = value
         return {
             "export_docs": export_docs,
+            "breaks": breaks,
             "template_ids": template_ids,
             "export_ids": export_ids,
             "ordered": ordered,
@@ -2096,9 +2267,15 @@ class Project:
         title = escape(self.get_setting("title", "Lekhak"))
         # 2.2: one invisible anchor per unit, so a published [[link]] has
         # somewhere to point inside this single file.
-        anchored = "".join(
-            f"<a id='unit-{index}'></a>{body}"
-            for index, (_t, body) in enumerate(units, start=1))
+        # Phase 1: every unit after the first begins a printed page. Inline
+        # rather than in a stylesheet, so a user template's own CSS is never
+        # fighting ours for the last word.
+        def wrapped(item: tuple[int, tuple[str, str]]) -> str:
+            index, (_title, body) = item
+            style = "" if index == 1 else " style='break-before: page;'"
+            return f"<a id='unit-{index}'></a><div class='unit'{style}>{body}</div>"
+
+        anchored = "".join(wrapped(item) for item in enumerate(units, start=1))
         content = (
             "<!doctype html><meta charset='utf-8'>"
             f"<title>{title}</title>{header}"
@@ -2106,21 +2283,36 @@ class Project:
         )
         self._atomic_write(Path(destination), content)
 
-    def export_docx(self, destination: Path, selected_ids: set[str] | None = None,
-                    templates: TemplateSet | None = None) -> None:
-        """DOCX keeps structural headings (title as Heading 1/2) and plain
-        body text; header/footer slots do not apply here. A Word TOC field
-        (page numbers only) is inserted at the top; Word or LibreOffice
-        fills it in on field update. A book's page setup (1.15) stamps
-        trim/margins/mirror/gutter onto every section; with none set,
-        python-docx's Letter template stands — same as before 1.15."""
-        from docx import Document as DocxDocument
-        from docx.enum.section import WD_SECTION_START
+    def export_root_titles(self, selected_ids: set[str] | None) -> list[str]:
+        """What heads an export (Phase 1): the selected containers' names, the
+        document's own name when one document is all that was chosen, or the
+        project's title for a whole-project export."""
+        if not selected_ids:
+            return [self.get_setting("title", "Lekhak")]
+        ordered = self.documents()
+        parents = {document.id: document.parent_id for document in ordered}
+
+        def inside_the_selection(document_id: str) -> bool:
+            current = parents.get(document_id)
+            while current is not None:
+                if current in selected_ids:
+                    return True
+                current = parents.get(current)
+            return False
+
+        roots = [document for document in ordered
+                 if document.id in selected_ids and not inside_the_selection(document.id)]
+        if not roots:
+            roots = [document for document in ordered if document.id in selected_ids]
+        return [document.title for document in roots]
+
+    @staticmethod
+    def _add_toc_field(output) -> None:
+        """The Word TOC field, placed after the title page (Phase 1) so the
+        contents do not stand in front of the book's own opening pages."""
         from docx.oxml import OxmlElement
         from docx.oxml.ns import qn
 
-        output = DocxDocument()
-        output.core_properties.title = self.get_setting("title", "Lekhak")
         paragraph = output.add_paragraph()
         run = paragraph.add_run()
         begin = OxmlElement("w:fldChar")
@@ -2136,27 +2328,67 @@ class Project:
         end.set(qn("w:fldCharType"), "end")
         for element in (begin, instruction, separate, placeholder, end):
             run._r.append(element)
+
+    def export_docx(self, destination: Path, selected_ids: set[str] | None = None,
+                    templates: TemplateSet | None = None) -> None:
+        """DOCX keeps structural headings (title as Heading 1/2) and plain
+        body text; header/footer slots do not apply here. A title page comes
+        first, then a Word TOC field (page numbers only), which Word or
+        LibreOffice fills in on field update; every document then starts a
+        page of its own. A book's page setup (1.15) stamps
+        trim/margins/mirror/gutter onto every section; with none set, the A4
+        baseline stands (Phase 1)."""
+        from docx import Document as DocxDocument
+        from docx.enum.section import WD_SECTION_START
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        output = DocxDocument()
+        output.core_properties.title = self.get_setting("title", "Lekhak")
+        # Title page (Phase 1 baseline): the writing's own name — the selected
+        # container, or the project's title for a whole-project export — with
+        # the author only if the project actually carries one (a collection of
+        # protest fliers has no author, and that is not our business). Every
+        # export gets one, including a single selected document.
+        author = ""
+        entries = self.project_metadata()
+        if "Author" in entries:
+            author = (entries["Author"][0] or "").strip()
+        for name in self.export_root_titles(selected_ids):
+            output.add_paragraph(name, style="Title")
+            if author:
+                output.add_paragraph(author, style="Subtitle")
+            output.add_page_break()
+        # The contents follow the title page, not the other way round.
+        self._add_toc_field(output)
+        output.add_page_break()
         scope = self._compile_scope(selected_ids, "docx")
         assembled = scope["export_docs"]
         injected = scope["template_ids"]
         previous_injected = False
         bookmark_id = 1
+        first = True
         for document in assembled:
-            # Book anatomy (2.1): every template page starts a fresh
-            # page, and manuscript resumes on a fresh page after them.
-            if document.id in injected or previous_injected:
-                output.add_page_break()
+            # Book anatomy (2.1): every template page starts a fresh page,
+            # and manuscript resumes on a fresh page after them. Baseline
+            # (Phase 1): so does every exported document — the first needs no
+            # break, there being nothing above it.
+            start = scope.get("breaks", {}).get(document.id, "page")
+            if not first:
+                if document.id in injected or previous_injected or start == "page":
+                    output.add_page_break()
+                # 1.6 page starts: a marked document opens a new section with
+                # the demanded parity; Word itself inserts the blank page when
+                # the flow lands on the wrong side. "right" and "next-odd" are
+                # the same demand (recto = odd in an LTR book) and emit the
+                # same section type, likewise left/next-even — the values are
+                # the writer's vocabulary, not seven behaviours.
+                if start in ("right", "next-odd"):
+                    output.add_section(WD_SECTION_START.ODD_PAGE)
+                elif start in ("left", "next-even"):
+                    output.add_section(WD_SECTION_START.EVEN_PAGE)
             previous_injected = document.id in injected
-            # 1.6 page starts: a marked document opens a new section with
-            # the demanded parity; Word itself inserts the blank page when
-            # the flow lands on the wrong side. "right" and "next-odd" are
-            # the same demand (recto = odd in an LTR book) and emit the
-            # same section type, likewise left/next-even — the five values
-            # are the writer's vocabulary, not five behaviours.
-            if document.page_break in ("right", "next-odd"):
-                output.add_section(WD_SECTION_START.ODD_PAGE)
-            elif document.page_break in ("left", "next-even"):
-                output.add_section(WD_SECTION_START.EVEN_PAGE)
+            first = False
             heading = output.add_heading(document.title, level=1 if document.kind == "chapter" else 2)
             # 2.2: every heading carries a bookmark, so a published
             # [[link]] becomes a real Word-internal hyperlink.
@@ -2175,9 +2407,11 @@ class Project:
             for paragraph_text in self.plain_text(content).split("\n"):
                 if paragraph_text.strip():
                     self._docx_paragraph(output, paragraph_text.strip())
-        geometry = self._page_setup_for_scope(scope)
-        if geometry is not None:
-            _apply_page_geometry(output, geometry)
+        # A4 is the baseline paper (Phase 1): an export with no page setup
+        # gets A4 rather than whatever python-docx's template happens to say.
+        # A book's own trim still wins.
+        _apply_page_geometry(
+            output, self._page_setup_for_scope(scope) or dict(DEFAULT_PAGE_SETUP))
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}-", dir=destination.parent)
@@ -2349,7 +2583,15 @@ class Project:
         destination.mkdir(parents=True)
         shutil.copy2(self.db_path, destination / self.db_path.name)
         shutil.copytree(self.documents_dir, destination / "documents")
-        backups = sorted((p for p in backup_directory.iterdir() if p.is_dir()), reverse=True)
+        # Prune only our own backups. The backup folder is the writer's to
+        # choose, so it can already hold anything — other tools' folders,
+        # their own — and a directory that is not one of our timestamps is
+        # not ours to delete.
+        backups = sorted(
+            (path for path in backup_directory.iterdir()
+             if path.is_dir() and BACKUP_STAMP_RE.fullmatch(path.name)),
+            reverse=True,
+        )
         for old in backups[keep:]:
             shutil.rmtree(old)
         return destination

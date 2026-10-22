@@ -12,8 +12,11 @@ understands PDF — we shell out, and when the converter or its scripting
 bindings are missing the message says how to fix each.
 """
 
+from __future__ import annotations
+
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -124,12 +127,31 @@ def _uno_missing_message() -> str:
 
 def _run_uno(interpreter: str, docx: Path, pdf_path: Path,
              soffice: str, workdir: Path) -> subprocess.CompletedProcess:
-    """The seam tests stand on: everything past here is LibreOffice."""
-    return subprocess.run(
+    """The seam tests stand on: everything past here is LibreOffice.
+
+    The worker runs as its own session leader because it starts LibreOffice
+    as a child. On a timeout, killing just the worker would leave soffice
+    alive — and convert() would then delete the profile directory out from
+    under the survivor, so the *next* export fails for reasons nothing in
+    its own run explains. Killing the whole process group takes both.
+    """
+    process = subprocess.Popen(
         [interpreter, str(UNO_SCRIPT), str(docx), str(pdf_path),
          soffice, str(workdir)],
-        capture_output=True, text=True, timeout=CONVERT_TIMEOUT,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        start_new_session=True,      # so the group can be killed as one
     )
+    try:
+        stdout, stderr = process.communicate(timeout=CONVERT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)   # pid is the pgid here
+        except ProcessLookupError:
+            pass                     # already gone; still drain the pipes
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(process.args, process.returncode,
+                                       stdout, stderr)
 
 
 def convert(docx: Path, destination: Path) -> None:

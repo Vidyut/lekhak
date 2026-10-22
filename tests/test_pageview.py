@@ -166,10 +166,10 @@ class PageCanvasTests(unittest.TestCase):
                                        self.view.page_count,
                                        self.view.scale))
 
-    def test_no_geometry_falls_back_to_letter(self):
+    def test_no_geometry_falls_back_to_a4(self):
         self.view.set_page(_paragraphs(2), None)
-        self.assertEqual(self.view.geometry["width"], 8.5)
-        self.assertEqual(self.view.geometry["height"], 11.0)
+        self.assertEqual(self.view.geometry["width"], 8.27)
+        self.assertEqual(self.view.geometry["height"], 11.69)
 
     def test_hit_test_maps_the_first_page_and_rejects_off_paper(self):
         self.view.set_page(_paragraphs(40), _six_by_nine())
@@ -248,7 +248,7 @@ class PageTabTests(unittest.TestCase):
         self.window._select_document(self.scene.id)
         self.window.views.setCurrentWidget(self.window.page_view)
         self.window._page_jump(7)
-        self.assertIs(self.window.views.currentWidget(), self.window.editor)
+        self.assertIs(self.window.views.currentWidget(), self.window.editor_page)
         self.assertEqual(self.window.editor.textCursor().position(), 7)
 
     def test_refresh_stays_quiet_on_other_tabs(self):

@@ -281,7 +281,8 @@ def import_book(project: Project, raw_documents: list[RawDocument],
     prose is lost in the promotion.
     """
     shelf_names = set(shelf_works(raw_documents))
-    folder = project.add_document(book_title, parent_id, "folder")
+    folder = project.add_document(
+        project.unique_title(book_title, parent_id), parent_id, "folder")
     stack: list[tuple[str, str]] = []          # (title, document_id)
     work_chapter: str | None = None
     for raw in raw_documents:
@@ -297,7 +298,13 @@ def import_book(project: Project, raw_documents: list[RawDocument],
             stack = []      # not in this book; a later block may re-enter
             continue
         kind = raw.kind if raw.kind in ("chapter", "scene") else "scene"
-        document = project.add_document(raw.title, child_parent, kind)
+        # Containers (chapters) must not land on a name already there: a
+        # same-titled second chapter would make every name-based match
+        # ambiguous. Scenes keep their titles — repeated scene titles are
+        # ordinary, and an import has no business renaming prose.
+        raw_title = (project.unique_title(raw.title, child_parent)
+                     if kind == "chapter" else raw.title)
+        document = project.add_document(raw_title, child_parent, kind)
         if raw.synopsis:
             project.update_document(document.id, synopsis=raw.synopsis)
         if raw.metadata:
@@ -331,7 +338,7 @@ def import_all_books(project: Project, raw_documents: list[RawDocument]
     wrapper_id: str | None = None
     if len(shelves) == 1:
         wrapper_id = project.add_document(
-            next(iter(shelves)), None, "folder"
+            project.unique_title(next(iter(shelves)), None), None, "folder"
         ).id
     return wrapper_id, [
         import_book(project, raw_documents, book, wrapper_id)
@@ -423,7 +430,7 @@ def import_markdown_file(project: Project, path: Path, *,
     chunks = split_markdown(text, chapter_divider=chapter_divider,
                             scene_divider=scene_divider,
                             opening_title=title)
-    folder = project.add_document(title, None, "folder")
+    folder = project.add_document(project.unique_title(title, None), None, "folder")
     chapter_id: str | None = None
     for chunk in chunks:
         kind = chunk.kind if chunk.kind in ("chapter", "scene") else "scene"

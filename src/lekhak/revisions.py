@@ -7,6 +7,8 @@ Accept/reject works on the live half; reconcile_revisions prunes table
 rows whose marks an undo removed.
 """
 
+from __future__ import annotations
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import (
     QColor, QTextCharFormat, QTextCursor, QTextDocument, QTextFormat,

@@ -2,6 +2,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from lekhak.project import Project
 
@@ -176,6 +177,11 @@ class ProjectTests(unittest.TestCase):
 
     def test_docx_section_parity_for_every_page_break_value(self):
         root = self.project.documents()[0]
+        # A leading document without a mark: the first document in any export
+        # cannot open a section (nothing precedes it), so without this the
+        # first marked chapter would be skipped rather than sectioned.
+        prologue = self.project.add_document("Prologue", root.id, "chapter")
+        self.project.write_content(prologue.id, "<p>Opens the book.</p>")
         for index, mark in enumerate(("right", "next-odd", "left", "next-even")):
             chapter = self.project.add_document(f"Chapter {index}", root.id, "chapter")
             self.project.write_content(chapter.id, "<p>Body text.</p>")
@@ -311,10 +317,152 @@ class ProjectTests(unittest.TestCase):
             "UPDATE documents SET kind='chapter' "
             "WHERE title='Draft' AND parent_id IS NULL"
         )
+        # Forgetting the flag too is what makes this an *old* project: one
+        # written before the migration existed carries no record of it.
+        connection.execute(
+            "DELETE FROM settings WHERE key='draft_folder_migration'")
         connection.commit()
         connection.close()
         self.project.open()
         self.assertEqual(self.project.documents()[0].kind, "folder")
+
+    def test_draft_migration_runs_once(self):
+        """After it has run, a root chapter named "Draft" is the writer's
+        own and stays a chapter — the seed is not rewritten every open."""
+        import sqlite3
+        self.project.close()
+        connection = sqlite3.connect(self.project.db_path)
+        connection.execute(
+            "UPDATE documents SET kind='chapter' "
+            "WHERE title='Draft' AND parent_id IS NULL"
+        )
+        connection.commit()
+        connection.close()
+        self.project.open()
+        self.assertEqual(self.project.documents()[0].kind, "chapter")
+
+    def test_backup_pruning_leaves_foreign_directories_alone(self):
+        """Pruning may only delete Lekhak's own timestamped backups: the
+        backup folder belongs to the writer and can already hold anything."""
+        folder = (Path(self.temporary.name) / "External Backups"
+                  / self.project.root.name)
+        self.project.set_backup_folder(Path(self.temporary.name) / "External Backups")
+        self.assertEqual(self.project.backup_directory(), folder)
+        folder.mkdir(parents=True)
+        theirs = folder / "my own notes"
+        theirs.mkdir()
+        (theirs / "important.txt").write_text("keep me", encoding="utf-8")
+
+        for _ in range(12):
+            self.project.backup(keep=10)
+
+        self.assertTrue((theirs / "important.txt").exists())
+        ours = [p for p in folder.iterdir() if p.name != "my own notes"]
+        self.assertEqual(len(ours), 10)
+
+    def test_renaming_a_backup_makes_it_permanent(self):
+        """The documented way to keep a version forever: rename the folder so
+        it no longer carries a timestamp. Pruning then cannot see it, and it
+        does not consume one of the ten kept slots either."""
+        self.project.backup()
+        backups = self.project.backup_directory()
+        first = sorted(p for p in backups.iterdir() if p.is_dir())[0]
+        kept = backups / "as it was before the rewrite"
+        first.rename(kept)
+
+        for _ in range(15):
+            self.project.backup(keep=2)
+
+        self.assertTrue(kept.is_dir())
+        self.assertTrue((kept / "project.sqlite3").exists())
+        stamped = [p for p in backups.iterdir() if p.is_dir() and p != kept]
+        self.assertEqual(len(stamped), 2)
+
+    def test_add_document_leaves_no_row_when_the_write_fails(self):
+        root = self.project.documents()[0]
+        before = len(self.project.documents())
+
+        with mock.patch.object(type(self.project), "write_content",
+                               side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.project.add_document("Scene", root.id)
+
+        self.assertEqual(len(self.project.documents()), before)
+
+    def test_split_writes_the_new_file_before_the_rows(self):
+        document = self.project.documents()[0]
+        self.project.write_content(document.id, "<p>one two three</p>")
+
+        with mock.patch.object(type(self.project), "write_content",
+                               side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.project.split_document(
+                    document.id, "<p>one two</p>", "<p>three</p>")
+
+        self.assertEqual(len(self.project.documents()), 1)
+        self.assertIn("one two three", self.project.read_content(document.id))
+
+    def test_split_prefers_duplication_over_losing_the_second_half(self):
+        """If the *last* step fails the split is half-applied: both rows
+        exist and the original still holds the whole text. Duplicated
+        prose is recoverable; a lost half is not."""
+        document = self.project.documents()[0]
+        self.project.write_content(document.id, "<p>one two three</p>")
+        real = type(self.project).write_content
+        calls = []
+
+        def flaky(project, document_id, html):
+            calls.append(document_id)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            return real(project, document_id, html)
+
+        with mock.patch.object(type(self.project), "write_content", flaky):
+            with self.assertRaises(OSError):
+                self.project.split_document(
+                    document.id, "<p>one two</p>", "<p>three</p>")
+
+        self.assertEqual(len(self.project.documents()), 2)
+        self.assertIn("one two three", self.project.read_content(document.id))
+
+    def test_merge_changes_nothing_when_the_combined_write_fails(self):
+        root = self.project.documents()[0]
+        first = self.project.add_document("First", root.id, "scene")
+        second = self.project.add_document("Second", root.id, "scene")
+        self.project.write_content(first.id, "<p>alpha</p>")
+        self.project.write_content(second.id, "<p>beta</p>")
+
+        with mock.patch.object(type(self.project), "write_content",
+                               side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.project.merge_documents(first.id, second.id)
+
+        titles = {d.id: d.title for d in self.project.documents()}
+        self.assertEqual(titles[first.id], "First")
+        self.assertEqual(titles[second.id], "Second")
+        self.assertIn("alpha", self.project.read_content(first.id))
+        # the history has not moved either: nothing happened at all
+        self.assertEqual(self.project.snapshots(second.id), [])
+
+    def test_replace_snapshots_exactly_the_documents_it_changes(self):
+        root = self.project.documents()[0]
+        scene = self.project.add_document("Scene", root.id, "scene")
+        self.project.write_content(scene.id, "<p>monsoon monsoon</p>")
+        untouched = self.project.add_document("Other", root.id, "scene")
+        self.project.write_content(untouched.id, "<p>nothing here</p>")
+
+        counts = self.project.replace("monsoon", "rain")
+
+        self.assertEqual(counts["replacements"], 2)
+        self.assertIn("rain", self.project.read_content(scene.id))
+        self.assertEqual([s.name for s in self.project.snapshots(scene.id)],
+                         ["Before replace"])
+        self.assertEqual(self.project.snapshots(untouched.id), [])
+
+        # …and the snapshot really is the way back.
+        snapshot = self.project.snapshots(scene.id)[0]
+        self.project.restore_snapshot(snapshot.id)
+        self.assertIn("monsoon", self.project.read_content(scene.id))
 
 
     def test_sibling_rank_is_per_parent_and_survives_reorder(self):

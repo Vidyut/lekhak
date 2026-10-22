@@ -46,11 +46,12 @@ class PageSetupDialogTests(unittest.TestCase):
         self.assertTrue(dialog.mirror_box.isChecked())
         self.assertEqual(dialog.geometry(), _geometry())
 
-    def test_blank_geometry_fills_the_letter_default(self):
+    def test_blank_geometry_fills_the_a4_default(self):
+        """Phase 1: an unconfigured export is A4, not python-docx's Letter."""
         dialog = PageSetupDialog(None)
-        self.assertEqual(dialog.trim_box.currentData(), "letter")
-        self.assertEqual(dialog.width_spin.value(), 8.5)
-        self.assertTrue(dialog.mirror_box.isChecked())
+        self.assertEqual(dialog.trim_box.currentData(), "a4")
+        self.assertEqual(dialog.width_spin.value(), 8.27)
+        self.assertFalse(dialog.mirror_box.isChecked())
 
     def test_picking_a_trim_fills_the_inches(self):
         dialog = PageSetupDialog(None)
@@ -64,8 +65,8 @@ class PageSetupDialogTests(unittest.TestCase):
         dialog.width_spin.setValue(7.0)
         self.assertEqual(dialog.trim_box.currentData(), "custom")
         # ... and staying on a preset keeps its id.
-        dialog.width_spin.setValue(8.5)
-        self.assertEqual(dialog.trim_box.currentData(), "letter")
+        dialog.width_spin.setValue(8.27)
+        self.assertEqual(dialog.trim_box.currentData(), "a4")
 
     def test_margins_without_a_text_area_are_refused(self):
         dialog = PageSetupDialog(_geometry())

@@ -15,6 +15,8 @@ The LibreOffice profile and log live under workdir; the caller owns
 that directory (and cleans it up), so hard-killed runs leak nothing.
 """
 
+from __future__ import annotations
+
 import socket
 import subprocess
 import sys

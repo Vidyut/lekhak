@@ -4,6 +4,7 @@ offscreen dialog that edits it.
 """
 
 import math
+import re
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -172,7 +173,13 @@ class PageSetupExportTests(unittest.TestCase):
         self.assertNotIn(b"mirrorMargins", settings)
 
     def test_every_section_of_a_page_start_book_gets_the_geometry(self):
-        self.project.update_document(self.chapter.id, page_break="right")
+        # The mark sits on the *book*, so it also exercises Phase 1's
+        # inheritance: the chapters below it resolve to "right" without
+        # each carrying the setting. The first document cannot take a
+        # section — nothing precedes it — so a prologue goes first.
+        prologue = self.project.add_document("Prologue", self.root.id, "chapter")
+        self.project.write_content(prologue.id, "<p>Before the mark.</p>")
+        self.project.update_document(self.root.id, page_break="right")
         self.project.set_page_setup(self.root.id, _six_by_nine())
         with self._export() as archive:
             sections = _sections(archive)
@@ -181,12 +188,87 @@ class PageSetupExportTests(unittest.TestCase):
                 page = section.find(f"{W}pgSz")
                 self.assertEqual(page.get(f"{W}w"), _twips(6.0))
 
-    def test_export_without_a_setup_keeps_the_template_letter(self):
+    def test_every_document_starts_on_a_new_page_by_default(self):
+        """Phase 1's baseline, and the author's own ask: with no templates and
+        no settings, each exported document begins on its own page — the first
+        one excepted, there being nothing above it."""
+        root = self.project.documents()[0]
+        for index in range(3):
+            chapter = self.project.add_document(f"Chapter {index}", root.id,
+                                                "chapter")
+            self.project.write_content(chapter.id, f"<p>Body {index}.</p>")
+
+        destination = Path(self.temporary.name) / "baseline.docx"
+        self.project.export_docx(destination)
+        with zipfile.ZipFile(destination) as archive:
+            xml = archive.read("word/document.xml").decode("utf-8")
+        # The title page and the contents each end a page, then every heading
+        # unit after the first opens one — asserted against the units actually
+        # printed, not against the fixture's shape.
+        units = len(re.findall(r'w:val="Heading[12]"', xml))
+        self.assertGreater(units, 1)
+        self.assertEqual(xml.count('w:type="page"'), 2 + units - 1)
+
+    def test_continuous_flow_runs_on_without_breaks(self):
+        root = self.project.documents()[0]
+        for index in range(3):
+            chapter = self.project.add_document(f"Chapter {index}", root.id,
+                                                "chapter")
+            self.project.write_content(chapter.id, f"<p>Body {index}.</p>")
+        # Set on the book: the descendants inherit "flow" (Phase 1).
+        self.project.update_document(root.id, page_break="flow")
+
+        destination = Path(self.temporary.name) / "flow.docx"
+        self.project.export_docx(destination)
+        with zipfile.ZipFile(destination) as archive:
+            xml = archive.read("word/document.xml").decode("utf-8")
+        # Only the title page and the contents are separated now; the body
+        # runs on exactly as "continuous flow" promises.
+        self.assertEqual(xml.count('w:type="page"'), 2)
+
+    def test_chapters_open_recto_once_a_trim_is_set(self):
+        """Phase 1: chapters demand a recto opening only when the book has a
+        real print trim — a plain A4 export should not sprout blank pages."""
+        root = self.project.documents()[0]
+        for index in range(2):
+            chapter = self.project.add_document(f"Chapter {index}", root.id,
+                                                "chapter")
+            self.project.write_content(chapter.id, f"<p>Body {index}.</p>")
+
+        destination = Path(self.temporary.name) / "no-trim.docx"
+        self.project.export_docx(destination)
+        with zipfile.ZipFile(destination) as archive:
+            plain = archive.read("word/document.xml").decode("utf-8")
+        self.assertEqual(plain.count('w:val="oddPage"'), 0)
+
+        self.project.set_page_setup(root.id, _six_by_nine())
+        destination = Path(self.temporary.name) / "trim.docx"
+        self.project.export_docx(destination)
+        with zipfile.ZipFile(destination) as archive:
+            recto = archive.read("word/document.xml").decode("utf-8")
+        self.assertGreaterEqual(recto.count('w:val="oddPage"'), 1)
+
+    def test_html_marks_a_new_page_between_units(self):
+        root = self.project.documents()[0]
+        for index in range(3):
+            chapter = self.project.add_document(f"Chapter {index}", root.id,
+                                                "chapter")
+            self.project.write_content(chapter.id, f"<p>Body {index}.</p>")
+
+        destination = Path(self.temporary.name) / "baseline.html"
+        self.project.export_html(destination)
+        html = destination.read_text(encoding="utf-8")
+        self.assertEqual(html.count("break-before: page;"),
+                         html.count("class='unit'") - 1)
+
+    def test_export_without_a_setup_gets_the_a4_baseline(self):
+        """Phase 1: no page setup means A4 (unmirrored), not Letter — Letter
+        was python-docx's template, never a decision we made."""
         with self._export() as archive:
             settings = archive.read("word/settings.xml")
             page = _sections(archive)[0].find(f"{W}pgSz")
         self.assertNotIn(b"mirrorMargins", settings)
-        self.assertEqual(page.get(f"{W}w"), _twips(8.5))
+        self.assertAlmostEqual(int(page.get(f"{W}w")) / 1440, 8.27, places=2)
 
     def test_nearest_ancestor_wins_over_a_parent_book(self):
         book = self.project.add_document("Book Two", self.root.id, "folder")
@@ -221,10 +303,10 @@ class PageSetupExportTests(unittest.TestCase):
         self.assertEqual(page.get(f"{W}w"), _twips(9.0))
 
     def test_defaults_and_labelled_presets_agree(self):
-        self.assertEqual(DEFAULT_PAGE_SETUP["trim"], "letter")
-        self.assertEqual(PAGE_TRIMS["letter"][1:], (8.5, 11.0))
+        self.assertEqual(DEFAULT_PAGE_SETUP["trim"], "a4")
+        self.assertEqual(PAGE_TRIMS["a4"][1:], (8.27, 11.69))
         self.assertEqual(clean_page_setup(dict(DEFAULT_PAGE_SETUP))["width"],
-                         8.5)
+                         8.27)
 
 
 if __name__ == "__main__":

@@ -177,21 +177,6 @@ class ImportMenuTests(unittest.TestCase):
 
         dialog.assert_not_called()
 
-    def test_import_into_new_project_uses_the_dump_name_by_default(self):
-        with self._patch_file_dialog(), mock.patch(
-            "lekhak.app.QFileDialog.getExistingDirectory",
-            return_value=str(Path(self.temporary.name) / "fresh"),
-        ), mock.patch(
-            "lekhak.app.QInputDialog.getText", return_value=("mini", True)
-        ):
-            self.window.import_scrivener_dump_new_project()
-
-        self.assertEqual(self.window.project.root,
-                         Path(self.temporary.name) / "fresh" / "mini.lekhak")
-        titles = {d.title for d in self.window.project.documents()
-                  if d.kind == "folder" and d.title != "Draft"}
-        self.assertEqual(titles, {"Mini Book", "Second Book"})
-
     def test_cancelling_the_file_picker_imports_nothing(self):
         with mock.patch("lekhak.app.QFileDialog.getOpenFileName",
                         return_value=("", "")):
