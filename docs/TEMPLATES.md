@@ -190,25 +190,34 @@ A template is a directory. Everything in it is optional except the HTML set.
 
 ```
 Templates/
-└── Penguin paperback/          ← the template; its name is what title-match uses
-    ├── html/                   ← the mandatory set: ALL css and metadata live here
-    │   ├── title_page.html
-    │   ├── project_header.html
-    │   ├── project_footer.html
-    │   ├── toc_page.html
-    │   ├── chapter.html
-    │   ├── chapter_end.html
-    │   ├── scene.html
-    │   ├── first_scene.html
-    │   ├── scene_end.html
-    │   ├── scene_divider.html
-    │   └── documents/          ← document-level slots: <name>.html
-    │       └── bare.html       ← built-in: `${Content}` and nothing else
-    ├── text/                   ← same slot names as .txt, for plain-text export
-    ├── docx/                   ← format override for DOCX (1.6/1.15 do most of this)
-    ├── ebook/                  ← EPUB override ("tagged as ebook": see below)
-    └── print/                  ← print/PDF override
+├── Default/                    ← a set; "Default" in any case is the default one
+│   ├── HTML/                   ← the mandatory set: all CSS and metadata live here
+│   │   ├── chapter.html        ← the reserved slot names, dressed your way
+│   │   ├── scene.html
+│   │   ├── title_page.html
+│   │   ├── toc_page.html       ← …the nine slots, all optional
+│   │   ├── Formal.html         ← a document variant: a whole-document render
+│   │   ├── Informal.html
+│   │   ├── Default.html
+│   │   └── Content without Title.html
+│   ├── EPUB/                   ← format override; unspecified slots fall back to HTML/
+│   └── DOCX/                   ← the config file, or a reference DOCX, or both
+├── Book/                       ← chosen by Type, or by a folder's title
+└── Research Article/
 ```
+
+**One directory per format, and one rule to tell the files apart:** a file named
+after a reserved slot is that slot; anything else is a document variant, which
+the writer picks per document (`doc_template`). So `Formal`, `Informal` and
+`Content without Title` are variants, and `Content without Title` is the
+built-in `bare` idea wearing the name its author would give it. (The
+`documents/` subfolder an earlier draft proposed is superseded: this is one
+fewer thing to explain.)
+
+**Set and format folder names match case-folded and trimmed**, as folder names
+already do elsewhere (2.1's variant matching, "Back matter"); **placeholder
+names stay exact** (§3.1). Nothing hinges on capitalisation in either case:
+`DOCX`, `Docx` and `docx` are one format, and `${Title}` is one value.
 
 - **`html/` is mandatory and authoritative**: CSS, page setup defaults,
   metadata (`<meta>`, EPUB OPF bits) all come from it. Every other format is
