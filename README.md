@@ -19,12 +19,19 @@ For screenshots, a detailed feature tour and more help, see the
 - Corkboard cards linked to binder structure and synopses
 - Rich-text editor and synopsis inspector
 - Distraction-free focus mode and adjustable interface font size
-  (Edit → Preferences…, `Ctrl+,`) — the editor keeps its own zoom
+  (Edit → Preferences…, `Ctrl+,`) — separate from the editor's own zoom
 - Paragraph styles, font controls, alignment, lists, and clear formatting
-- Section find/replace, zoom controls, and distraction-free focus mode
+  in the editor's own format bar, above the text it acts on
+- Display-only editor zoom (`Ctrl`+scroll, View menu, `Ctrl+0` to reset):
+  enlarges the writing without touching the document's formatting, and is
+  remembered with the project — the Page view scales with it to match
+- Section find/replace, and distraction-free focus mode
 - Per-section word targets with live progress
 - Debounced autosave using atomic file replacement
-- `Ctrl+S` immediate save plus a timestamped full-project backup
+- `Ctrl+S` immediate save plus a timestamped full-project backup — rename a
+  backup folder to keep that version forever, and to label it however you
+  like: `20261011-093015-441002` becomes `11Oct26 before the rewrite`.
+  Pruning only ever touches folders still carrying a raw timestamp
 - Per-project selectable backup folder with isolated project subdirectories
 - SQLite metadata with foreign keys and ordered siblings
 - Project-wide search, plus preview-and-confirm replace (regex supported)

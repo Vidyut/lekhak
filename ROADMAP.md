@@ -163,6 +163,42 @@ session rather than assumed:
 Verified: set 20 pt → tree 20 / editor 12 in the same session, and across
 a simulated relaunch.
 
+**Display-only editor zoom, and the leak it replaced (2026-10-21):** the
+old View → Zoom called `QTextEdit.zoomIn/zoomOut`, which moves only the
+document's *default* font. Every stored span carries its own size, so
+nothing visibly zoomed — and the body CSS was rewritten to the zoomed
+number and saved. Auditing the author's real project found seven
+documents already stamped `body … font-size:14pt` by it (repaired to the
+12 pt anchor; originals kept in `~/Writing/LEKHAK/zoom-leak-repair-20261021`).
+The replacement is a display factor (`ZOOM_ANCHOR_PT`,
+`scaled_font_sizes()`): the editor loads stored HTML × zoom, saves ÷ zoom,
+and each place that converts between live formats and stored ones undoes
+it — style capture (`_capture_signature`), pasted fragments
+(`_scale_scratch`) — while style application, the size box and Clear
+multiply it. The load-bearing test is that zooming and saving leaves the
+stored file **byte-identical**. Zoom is session state about this
+manuscript (`editor_zoom`, beside `last_document`/`last_cursor`, 1.9),
+driven by Ctrl+scroll over the text, the View menu, and a readout; the
+Page view multiplies its canvas scale by the same factor, so paper and
+type scale together and pagination stays what the export will print.
+The format bar itself moved into the Editor tab in the same pass: bold,
+italic, style, font, size, lists, alignment, Clear and the zoom readout
+are editor-scoped, so they now hide with the tab instead of sitting in
+the window chrome above the sidebars (it stays a real `QToolBar`, so
+focus mode's sweep still hides it). Tests `tests/test_zoom.py` (20).
+
+**The clipboard is a saved layer too (2026-10-22):** Qt's own `copy()`
+exports the live document, so the clipboard carried sizes already × zoom —
+and `_scale_scratch` multiplied them a second time on the way back in.
+With Preferences → paste "keep fonts" on at 150 %, a 12 pt passage copied
+inside a zoomed document pasted at 27 pt and was *stored* as 18 pt after
+the next save. `LinkEditor.copy()` now divides the factor out before the
+clipboard sees the HTML — the same rule `save_current()` follows, so a
+paste puts it back exactly once — and `cut()` is copy plus a delete,
+because Qt's own cut builds its mime data itself and never calls the
+Python override. Nothing selected leaves the clipboard alone.
+Tests `tests/test_zoom.py` (22).
+
 ### 1.5 Internal links — DONE
 **Request:** link to internal documents — a picker, and Obsidian-style
 `[[wiki]]` links that resolve by title and open the page on click.
@@ -278,6 +314,68 @@ switch, read by `MainWindow.reopen_last_project()`; missing/moved/corrupt
 project falls back to the empty window with no dialog.
 Tests: `tests/test_app_resume.py` (9 offscreen GUI tests; QSettings
 redirected to a temp dir so the suite never touches real config).
+
+**Save-failure contract and write-order hardening (2026-10-21):** a
+failed write no longer costs the writer their text. `save_current()`
+returns False (after its dialog) and every caller that would destroy or
+outlive the editor stops there: a document switch (the tree highlight is
+put back), a project switch, close (which now asks "Quit anyway?" and
+ignores the close on No), the Ctrl+S backup, exports, split, merge,
+snapshot, restore, replace-in-project, the revision passes and the four
+imports. Tests `tests/test_app_save.py` (9). Project's own write order
+fails toward the harmless state: `add_document` writes the file before
+the row (never a row without content; the orphan is unlinked),
+`split_document` writes the new half and the rows before touching the
+original (worst case duplicated prose, never a lost half),
+`merge_documents` combines before re-homing history (a failed merge
+changes nothing at all), and `replace` plans the whole change set first,
+snapshots exactly the documents it will change, then writes — its only
+rollback path. Backup pruning deletes only directories matching our own
+`%Y%m%d-%H%M%S-%f` stamp, because the backup folder is the writer's and
+may already hold anything. The "Draft" seed migration now runs once
+(settings flag): the query cannot tell the seed from a chapter the
+writer named "Draft", so repeating it on every open was rewriting their
+deliberate choice. PDF export timeouts kill the worker's whole process
+group, so LibreOffice cannot outlive the cleanup that deletes its
+profile and break the next export. The AI client refuses a key — and the
+manuscript text travelling with it — over plain http to a non-local
+endpoint. The suite's exit-139 segfault was two test modules handing a
+Python-owned `QMimeData` to the clipboard (PySide6 6.12 frees it twice at
+interpreter exit); both now clear the clipboard in `tearDownModule`.
+
+**The revision passes, second look (2026-10-22).** The rows were deleted
+and never put back when the write that follows them failed, leaving the
+stored marks on disk with nothing left to accept or reject them — colour
+and strikethrough nobody can act on again. The rows still go first (they
+must: `save_current()` runs `reconcile_revisions`, which counts the marks
+left in the stored HTML and prunes pending rows by sequence order, so
+resolving the earlier of two passes would otherwise eat the later one's
+row), but a failed write now restores them through
+`Project.restore_revisions` — the *same* ids, because the live document
+still carries those ids in its surviving marks. Two tests in
+`tests/test_revisions.py` pin both paths (accept-all and the passes
+dialog). Suite 452, exit 0.
+
+**Imports cannot hurt the project (2026-10-21).** Imports never overwrite:
+a second import of a name that is already there lands as a numbered copy
+(`Book`, `Book (2)` — `Project.unique_title`, containers only, since scenes
+may legitimately repeat a title), and identical content is reported *before*
+it is duplicated — compared by folder names and the prose inside
+(`Project.subtree_fingerprint`), so a re-export with new file bytes still
+reads as the same work. The comparison runs in a throwaway project, so
+refusing an import leaves the real project untouched with nothing to clean
+up. The merge/skip/overwrite walkthrough (sizes, checkbox-gated overwrite,
+abort-and-clean-up) is designed in `docs/IMPORTS.md` and deferred; tests
+`tests/test_import_safety.py` (10) pin the floor.
+
+**Keeping a version forever (2026-10-21).** Renaming a backup folder — to
+`11Oct26 before the rewrite`, say — makes it permanent: pruning matches only
+our own `%Y%m%d-%H%M%S-%f` names, and renamed folders also stop consuming the
+kept slots, so a rolling set plus any number of kept ones coexist in the same
+directory. Documented in the README; pinned by a test. A Backups list with a
+*Protect this one* button (the same rename, with a label field) is designed,
+not built.
+Suite 443, exit 0.
 
 ### 1.10 Paste that doesn't mangle formatting, with preferences — DONE
 **Request:** "default behaviour should copy stuff like bold/italics, but not
@@ -466,6 +564,35 @@ mirrored, landscape flag when width exceeds height. The PDF route of
 converts to a 432 pt × ~649 pt PDF (LibreOffice's own rounding),
 verified live.
 
+**Baseline export behaviour, phase 1 of `docs/TEMPLATES.md` (2026-10-21).**
+An export with no configuration at all now comes out readable: **A4** paper
+(`DEFAULT_PAGE_SETUP`; Letter was python-docx's template, never a decision —
+and the A4 baseline is deliberately *unmirrored*, since a bare A4 export is
+not necessarily a bound book), and **every exported document starts on a new
+page** — the author's own ask, "no point mind-reading users". The first
+document is exempt (nothing precedes it, and a leading break would render a
+blank first page). Page starts are now resolved **once**, in
+`_compile_scope`, so all exporters agree: an explicit setting wins
+nearest-first (document → chapter → book → series), and `auto` — the stored
+default — inherits and then falls back to a new page. The inspector's
+vocabulary grew to carry that honestly: *Automatic (new page)*, *Continuous
+flow*, *New page*, and the four parity demands, `project.py` accepting
+`flow` and `page` alongside them. Verified on the author's own project: the
+Antyeshti subtree exports at 8.27 in with four breaks (folder heading,
+chapter, each scene). **The rest of the phase landed the same night:** DOCX
+gains a **title page** — the selected container's name (the project's title
+for a whole-project export, the document's own name for a single selection),
+with the author printed only when the project metadata actually carries an
+`Author` — then the **TOC field after it**, then the body, so the contents no
+longer stand in front of the book's opening; chapters and other containers
+**open recto automatically once a real print trim is set** (a plain A4 export
+sprouts no blank pages, asserted by test); and the HTML export marks
+`break-before: page` between units, inline so a user template's own CSS keeps
+the last word. Still to come: the same breaks in EPUB (inherent per unit) and
+form-feed consideration for text, plus the template-discovery phases
+(`docs/TEMPLATES.md` §9). Suite 447, exit 0. A comparison against other
+writing software, with an easy batch queued, is in `docs/IDEAS.md`.
+
 ## Phase 2 — books, variants, and conditional content
 
 ### 2.1 Book-level compile settings — DONE
@@ -642,10 +769,16 @@ imports typed as `date` so it opens in the panel's picker directly, not
 as text ("dates changed to dates directly"). Whole-library import of the
 author's real dump: 3 books, 330 documents, 406k words in ~0.15s — the
 2.6MB file is not too big. File menu: "Import Scrivener Dump…" into the
-open project, and "…into New Project…" which creates a fresh `.lekhak`
-named after the dump file. Still open in this item: nothing — PDF
+open project. Still open in this item: nothing — PDF
 joined the export kinds on 2026-10-21 (1.6), so the round trip covers
 text/html/docx/epub/markdown/pdf.
+**Imports land in the open project only (2026-10-21):** the four
+"…into New Project…" menu variants (dump, markdown, yWriter, Scrivener)
+were removed. They forked the writer's session and quietly owned a new
+folder for the sake of a source program's habits, which is not this
+app's job: whoever wants a fresh project makes one first
+(File → New Project) and imports into it. `test_app_import` loses the
+test that covered the deleted path; suite 413.
 **Design note for the Markdown import (author's idea, 2026-10-20):**
 "insert specific strings as dividers for the splitter — [this string]
 begins a chapter, [that string] begins a scene." The importer should
@@ -655,7 +788,7 @@ and the file splits on those, pandoc-free, everything between dividers
 becoming the document's prose. Same placement stack as the dump import
 once the blocks exist.
 **Markdown import implemented (2026-10-20):** one commit (`d5e50af`).
-File → "Import Markdown File…" / "…into New Project…"; the dialog names
+File → "Import Markdown File…"; the dialog names
 the book title (default: file stem) and both divider strings (either may
 be emptied to drop that level). A divider must start the stripped line
 and be followed by whitespace — `##nope` is prose — and the scene
@@ -687,7 +820,7 @@ words, not real markdown links; a standalone top-level scene exports as
 than back at book level; book-settings numbers/chrome are absent by
 design — clean markdown is prose and structure only.
 **yWriter 7 import implemented (2026-10-20):** one commit (`53c5076`).
-File → "Import yWriter Project…" / "…into New Project…": the `.yw7`
+File → "Import yWriter Project…": the `.yw7`
 single-XML format (root `YWRITER7`, scene prose inline in
 `SceneContent`) parsed with no dependency, chapter order from the
 `CHAPTERS` list and scene order from each chapter's `ScID` references;
@@ -883,7 +1016,8 @@ template's, so the preview's page count can differ from the PDF's until
 template typography is parsed for preview; a document is assumed to
 start recto (page 1 = right-hand sheet) — parity across a multi-scene
 book isn't modeled; template header/footer slots and 1.6 page-start
-markers don't shift the sheets; zoom is fit-only (no manual control);
+markers don't shift the sheets; zoom is fit × the session's display
+factor (1.8) — Ctrl+scroll on the paper, no separate page-view setting;
 no word/page estimates yet (the status line counts sheets).
 
 **Book cover generator (captured 2026-10-20, not scheduled).** Full-wrap
@@ -927,6 +1061,15 @@ is a decision for when this gets scheduled.
   numbering or import/export feature. An interchange concern (binder
   numbers, TOC markers) is shown on the way out and stripped on the way in;
   it never lands in the stored manuscript.
+- **Destruction is confirmed, and never by name alone.** No content is
+  deleted, overwritten or merged, and no target is chosen by a *title* match,
+  without an explicit confirmation that names exactly what will be lost and
+  which item (its title and its place in the binder) is meant. A Yes/No
+  dialog is not enough — it gets clicked through; the confirmation carries a
+  checkbox that has to be ticked before the destructive button is live.
+  Where several items share a name, the writer picks which one: the app
+  never guesses on their behalf. Writing into a folder that already exists
+  is allowed — behind that confirmation, never from a bare paste.
 - **Lean over clever, and every line must earn its place.** Before
   implementing a feature, check both sides: what it costs (a new mechanism,
   a new stored role, a new regex in a write path, a new code path that can
