@@ -3095,9 +3095,18 @@ class MainWindow(QMainWindow):
                     continue
                 add_row(child, item, template_side)
 
-        for document in sorted(children.get(None, []), key=lambda d: d.position):
-            if document.id in in_template:
-                continue  # a parentless templates root: lifted below
+        # Scoped to the selection (docs/UI-NOTES.md 2): a folder shows its
+        # contents, a document shows its siblings, and with nothing selected
+        # the project appears whole with templates lifted below. Without it,
+        # reaching the right folder still meant scrolling the whole binder.
+        selected = next((d for d in documents if d.id == self.current_id), None)
+        if selected is None:
+            roots = [d for d in children.get(None, [])
+                     if d.id not in in_template]
+        else:
+            scope = selected.id if selected.id in has_children else selected.parent_id
+            roots = children.get(scope, [])
+        for document in sorted(roots, key=lambda d: d.position):
             add_row(document)
         for document in lifted_template_roots(documents, in_template):
             add_row(document, None, template_side=True)
