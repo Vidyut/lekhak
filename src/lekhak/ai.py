@@ -20,6 +20,34 @@ from PySide6.QtCore import QSettings
 
 DEFAULT_ENDPOINT = "http://localhost:11434/v1"
 
+# The shipped proofreading prompt (docs/AI.md: "bloopers, not prose").
+# Minimal edits is the whole contract with a small model — left to its
+# own judgement a small model smooths voice and tidies deliberate
+# fragments, so the prompt forbids exactly that.
+PROOFREAD_SYSTEM = (
+    "You are a copy editor for fiction. Fix only bloopers: typos, "
+    "spelling, grammar, doubled words or lines, stray spaces and "
+    "punctuation. Make the minimal edit that repairs each blooper and "
+    "nothing more — do not polish, rephrase, smooth the author's voice "
+    "or restructure sentences; the wording and paragraphing are "
+    "deliberate. Return only the corrected text, with no commentary "
+    "and no quotation marks around it."
+)
+
+# What both AI menu items show when no model is configured: not a shrug
+# but the shortest path to a working setup (BUILD-NOW 8 — the menu
+# explains instead of failing silently).
+NO_MODEL_MESSAGE = (
+    "No AI model is configured yet.\n\n"
+    "Local model — nothing leaves your computer:\n"
+    "  1. Install Ollama from https://ollama.com\n"
+    "  2. In a terminal:  ollama pull qwen2.5:7b   (any small model)\n"
+    "  3. Preferences → Model: qwen2.5:7b — the endpoint "
+    "http://localhost:11434/v1 is already the default.\n\n"
+    "Small models are error-prone: proofread bloopers with them, not "
+    "prose, and nothing unsupervised."
+)
+
 
 class AIError(Exception):
     """Any refusal or transport failure, with a message meant for the
@@ -72,8 +100,7 @@ def complete(system: str, user: str,
     """
     settings = settings or load_settings()
     if not settings.model.strip():
-        raise AIError(
-            "No AI model set — fill in model and endpoint in Preferences.")
+        raise AIError(NO_MODEL_MESSAGE)
     if settings.key and _sends_key_in_the_clear(settings.endpoint):
         raise AIError(
             "Refusing to send the API key unencrypted: "
@@ -121,4 +148,19 @@ def complete(system: str, user: str,
             "AI endpoint response has no assistant message") from error
     if not isinstance(content, str):
         raise AIError("AI endpoint response message is not text")
-    return content.strip()
+    text = content.strip()
+    if not text:
+        # A thinking model that hits its token cap mid-reasoning answers
+        # in the reasoning field with no content at all (seen against a
+        # live Ollama with qwen3.5:2b) — "nothing" is not an explanation.
+        message = body["choices"][0]["message"]
+        reasoning = message.get("reasoning") or message.get(
+            "reasoning_content") or ""
+        if str(reasoning).strip():
+            raise AIError(
+                f"Model {settings.model} returned no usable answer: it "
+                "spent the whole reply thinking and ran into its token "
+                "limit. Use a small non-thinking model instead "
+                "(ollama pull phi4-mini)."
+            )
+    return text

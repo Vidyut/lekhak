@@ -50,7 +50,7 @@ from PySide6.QtCore import (
     Qt, QTimer, QTime, QUrl, Signal,
 )
 from PySide6.QtGui import (
-    QAction, QDesktopServices, QFont, QKeySequence,
+    QAction, QColor, QDesktopServices, QFont, QKeySequence,
     QTextBlockFormat,
     QTextCharFormat, QTextCursor, QTextDocument, QTextDocumentFragment,
     QTextFormat, QTextListFormat,
@@ -72,6 +72,7 @@ from . import ai
 from . import pdf
 from . import tts
 from . import odt
+from . import spellcheck
 from . import revisions
 from .importer import (
     dump_books, import_all_books, import_docx, import_markdown_file,
@@ -525,7 +526,16 @@ class PreferencesDialog(QDialog):
         ai_note = QLabel(
             "Used by AI → Continue Scene and Proofread Selection. The "
             "answer is always applied as a tracked change, never written "
-            "into the manuscript directly."
+            "into the manuscript directly — and proofreading asks for "
+            "minimal edits: bloopers, not prose.\n"
+            "Local model (nothing leaves your computer): install Ollama, "
+            "then  ollama pull <model-name>  (e.g. ollama pull qwen2.5:7b). "
+            "The default endpoint http://localhost:11434/v1 already "
+            "matches Ollama.\n"
+            "Read this before you rely on it: a model that fits an "
+            "ordinary computer is a very small model, and small models "
+            "are error-prone — they manage typos and simple bloopers, "
+            "not unsupervised work, and prompt wording will need tuning."
         )
         ai_note.setWordWrap(True)
         layout.addWidget(ai_note)
@@ -2475,6 +2485,16 @@ class MainWindow(QMainWindow):
         self.save_timer.setSingleShot(True)
         self.save_timer.setInterval(700)
         self.save_timer.timeout.connect(self.save_current)
+        # Spell squiggles (8): a debounced dictionary pass, off by
+        # default — a fresh project lights up with invented names until
+        # there is a project dictionary to feed it.
+        self.spell_enabled = QSettings().value(
+            "ui/spellSquiggles", False, type=bool)
+        self._spell_cache: dict[str, bool] = {}
+        self.spell_timer = QTimer(self)
+        self.spell_timer.setSingleShot(True)
+        self.spell_timer.setInterval(500)
+        self.spell_timer.timeout.connect(self._update_spell_squiggles)
         self._build_menu()
         self._set_project_enabled(False)
 
@@ -2568,6 +2588,16 @@ class MainWindow(QMainWindow):
         self._action(view_menu, "Zoom Out", QKeySequence.ZoomOut, self.zoom_out)
         self._action(view_menu, "Reset Zoom", "Ctrl+0", self.reset_zoom)
         self._action(view_menu, "Focus Mode", "F11", self.toggle_focus_mode)
+        # Spell squiggles (8): deterministic dictionary pass — no model,
+        # no network; red wavy underlines, off until asked for.
+        self.spell_action = QAction("Spell-check Squiggles", self)
+        self.spell_action.setCheckable(True)
+        self.spell_action.setChecked(self.spell_enabled)
+        self.spell_action.setToolTip(
+            "Red wavy underlines for words the dictionary rejects "
+            "(aspell or hunspell) — typos only; no model, no network.")
+        self.spell_action.toggled.connect(self._toggle_spell_squiggles)
+        view_menu.addAction(self.spell_action)
 
         document_menu = self.menuBar().addMenu("&Document")
         self._action(document_menu, "Split at Cursor", "Ctrl+K", self.split_section)
@@ -2598,8 +2628,13 @@ class MainWindow(QMainWindow):
         ai_menu = self.menuBar().addMenu("&AI")
         self._action(ai_menu, "Continue Scene", None,
                      self._ai_continue_scene)
-        self._action(ai_menu, "Proofread Selection", None,
-                     self._ai_proofread_selection)
+        self.proofread_action = self._action(
+            ai_menu, "Proofread Selection", None,
+            self._ai_proofread_selection)
+        self.proofread_action.setToolTip(
+            "Bloopers, not prose: typos, grammar, doubled words and "
+            "stray spaces as the minimal edit — always applied as a "
+            "tracked change for you to accept or reject.")
 
     def _action(self, menu, text, shortcut, callback) -> QAction:
         action = QAction(text, self)
@@ -3292,6 +3327,9 @@ class MainWindow(QMainWindow):
         self._refresh_page_preview()
         self.loading = False
         self._update_word_count()
+        # Squiggles go stale the moment the text changes underneath,
+        # and this load path bypasses _content_changed's debounce.
+        self._update_spell_squiggles()
         self._refresh_corkboard()
         self._sync_outliner_selection()
 
@@ -3299,10 +3337,67 @@ class MainWindow(QMainWindow):
         if not self.loading:
             self.save_timer.start()
             self._update_word_count()
+            if self.spell_enabled:
+                # Debounced: the dictionary pass spawns a process, so it
+                # waits for the typing to pause instead of per keystroke.
+                self.spell_timer.start()
 
     def _metadata_changed(self) -> None:
         if not self.loading:
             self.save_timer.start()
+
+    # --- spell squiggles (8) ------------------------------------------------
+
+    def _toggle_spell_squiggles(self, checked: bool) -> None:
+        """View-menu switch for the dictionary underliner (8).
+
+        A checker missing from the system is not a silently dead
+        toggle: the box falls back to off, the setting stays off and
+        the status bar says what to install.
+        """
+        if checked and spellcheck.find_engine() is None:
+            self.spell_action.blockSignals(True)
+            self.spell_action.setChecked(False)
+            self.spell_action.blockSignals(False)
+            self.spell_enabled = False
+            QSettings().setValue("ui/spellSquiggles", False)
+            self.statusBar().showMessage(
+                "No spell checker found — install aspell or hunspell",
+                6000)
+            return
+        self.spell_enabled = checked
+        QSettings().setValue("ui/spellSquiggles", checked)
+        if checked:
+            self._update_spell_squiggles()
+        else:
+            self.spell_timer.stop()
+            self.editor.setExtraSelections([])
+
+    def _update_spell_squiggles(self) -> None:
+        """Red wavy underlines under words the dictionary rejects (8).
+
+        View-level only — ExtraSelections never touch the document, so
+        squiggles cannot be undone, saved or seen by an export, and a
+        missing or failing checker flags nothing rather than everything.
+        """
+        if not (self.project and self.current_id and self.spell_enabled):
+            self.editor.setExtraSelections([])
+            return
+        selection_format = QTextCharFormat()
+        selection_format.setUnderlineStyle(
+            QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
+        selection_format.setUnderlineColor(QColor("#c62828"))
+        selections = []
+        for start, end in spellcheck.misspellings(
+                self.editor.toPlainText(), self._spell_cache):
+            selection = QTextEdit.ExtraSelection()
+            cursor = QTextCursor(self.editor.document())
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.KeepAnchor)
+            selection.cursor = cursor
+            selection.format = selection_format
+            selections.append(selection)
+        self.editor.setExtraSelections(selections)
 
     def _selection_metadata_target(self) -> str | None:
         """What the metadata section (and Edit Metadata…) acts on: the
@@ -3759,10 +3854,7 @@ class MainWindow(QMainWindow):
             QApplication.setOverrideCursor(Qt.WaitCursor)
             try:
                 text = ai.complete(
-                    "You are a copy editor. Fix spelling, grammar and "
-                    "punctuation only; keep the author's voice, wording "
-                    "and paragraphing. Return only the corrected text — "
-                    "no commentary.",
+                    ai.PROOFREAD_SYSTEM,
                     selected,
                 )
             finally:

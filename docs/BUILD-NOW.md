@@ -196,6 +196,50 @@ Selection lands exactly one tracked change per edit; with no model
 configured, the AI menu explains how to set one up instead of failing
 silently.
 
+**Built (2026-10-22).** Proofread Selection now sends `ai.PROOFREAD_SYSTEM`
+— the shipped "bloopers, not prose" prompt: fix typos, spelling, grammar,
+doubled words and lines, stray spaces and punctuation, the *minimal edit*
+only, never polish, rephrase or restructure, return the corrected text
+alone. The empty-model refusal (`ai.NO_MODEL_MESSAGE`) is the shortest
+setup path, not a shrug: install Ollama, `ollama pull qwen2.5:7b`,
+Preferences → Model, endpoint already right — and both AI menu items show
+it, the proofread item additionally carrying a "Bloopers, not prose"
+tooltip. Preferences got the local-model how-to (install, `ollama pull`,
+default endpoint) and the AI.md read-this-first warning verbatim in
+spirit: a model that fits an ordinary computer is very small and
+error-prone; bloopers yes, unsupervised edits never, prompt tuning
+expected.
+
+One more explanation the live run demanded: a thinking model that hits
+its token cap mid-reasoning (qwen3.5:2b, 3,983 tokens of `reasoning`,
+empty `content`, `finish: length`) used to surface as "AI returned
+nothing"; `complete()` now says which model burned the reply thinking
+and names a non-thinking replacement.
+
+The underliner is a separate, model-free module, `spellcheck.py`:
+aspell in batch mode first, hunspell as fallback, one process spawn per
+refresh and a session word cache, ranges in UTF-16 code units because
+that is what QTextDocument positions are, and a missing or failing
+checker flags *nothing* rather than burying the page in false positives.
+The View menu gained Spell-check Squiggles (default off — a fresh
+project lights up with invented names before there is a project
+dictionary to feed), red wavy `ExtraSelections` that cannot be undone,
+saved or exported, a 500 ms debounce on typing, a direct refresh on
+document load, and a toggle that refuses politely — back to off, status
+bar naming aspell/hunspell — when the machine has neither.
+
+Verified by hand against the live Ollama on this machine, not committed:
+phi4-mini through the real window landed exactly one AI delete/insert
+pair for one selection ("teh quic brown fox jumpd over teh lasy dogg."
+→ minimal corrections, tracked, never in place), and the qwen3.5:2b
+thinking run is what produced the explanation above. Twenty-one tests in
+`tests/test_ai_local.py` and `tests/test_spellcheck.py`; the suite still
+spawns no network and no checker process — same house rule as
+`tests/test_pdf.py`. Suite 540, exit 0; mutations caught (proofread
+prompt unshipped, `ollama pull` removed from the no-model message,
+squiggle verdict filter inverted, squiggles on by default, thinking-reply
+explanation removed).
+
 ## 9. Phase-1 leftovers
 Text export pagination (form feed or not) and the EPUB note that per-unit
 files already are pages.
