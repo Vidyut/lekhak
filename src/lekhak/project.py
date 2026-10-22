@@ -54,6 +54,10 @@ TAG_RE = re.compile(r"<[^>]+>")
 # document would count ~19 phantom words ("p, li { white-space …") and
 # leak the same lines into text exports and search.
 STYLE_RE = re.compile(r"<style\b[^>]*>.*?</style>", re.I | re.S)
+# A pasted link is not a reference to this project. Relevant when scanning
+# prose for mentions: URLs are full of digits and slashes that would otherwise
+# match short numeric titles.
+URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.I)
 # Backup directory names this app creates (datetime "%Y%m%d-%H%M%S-%f").
 # Pruning matches this exactly so a writer's own folders in a
 # writer-chosen backup directory are never mistaken for our old backups.
@@ -1056,11 +1060,21 @@ class Project:
         (?<!\w)/(?!\w) rather than \b so titles that start or end with
         punctuation still bind correctly, and both sides are casefolded
         so a match survives every case difference the writer typed.
+
+        Two things are deliberately *not* mentions:
+
+        - **A phrase with no letters in it.** A text title matches by
+          meaning; a bare number matches by coincidence — a year, a page
+          number, an index — so a chapter called "2" would be "mentioned" by
+          every "2024" in the book. Meaningless matches are worse than none.
+        - **Anything inside a URL.** A link copied from the internet is not a
+          reference to this project, and URLs are thick with the digits and
+          slashes that make the previous case so noisy.
         """
-        if not text or not phrase:
+        if not text or not phrase or not any(ch.isalpha() for ch in phrase):
             return False
         pattern = r"(?<!\w)" + re.escape(phrase.casefold()) + r"(?!\w)"
-        return re.search(pattern, text.casefold()) is not None
+        return re.search(pattern, URL_RE.sub(" ", text).casefold()) is not None
 
     def search(self, query: str) -> list[Document]:
         """Documents whose title, synopsis or body text contains ``query``.
