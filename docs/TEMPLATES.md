@@ -301,6 +301,17 @@ Slots are strings with `${Value}` placeholders and `$if(Value)…$endif`
 conditionals (2.2). Conditionals read the same namespace, so
 `$if(Metadata.Status = Final)` works anywhere a `${…}` does.
 
+**Shortcodes in prose, too (built 2026-10-22).** A document's own text
+may carry `${…}` markers; they expand once, at compile time, when an
+export pulls the content — the stored manuscript keeps the literal
+markers and the editor shows them, exactly like `[[wiki links]]`
+resolving at export rather than at rest. The vocabulary is the slots'
+own (`${Metadata.Key}` from the sidebar included, resolved against that
+document — the inheritance chain below is still unbuilt); `${Content}`
+never expands inside prose, and conditionals stay in slots: prose gets
+values, not control flow. Unknown keys render empty, as in a slot.
+HTML escaping applies to expanded values, as in a slot.
+
 | Value | Meaning |
 |---|---|
 | `${Title}`, `${Kind}`, `${Synopsis}`, `${WordCount}` | the unit being rendered |

@@ -259,6 +259,36 @@ counts the section files against the units. Five tests in
 (form feeds injected into the text export, the blank-line unit gap
 collapsed).
 
+## 10. Shortcodes in prose
+The author's follow-up to the shortcuts/shortcodes lists: `${…}`
+markers inside a document's own text should render when the templates
+pull the content for export — not live in the editor, not in the stored
+file.
+*Acceptance:* a scene whose prose says `${Metadata.Scene Title}` exports
+as "A new dawn."; the document on disk still says
+`${Metadata.Scene Title}`; conditionals and `${Content}` stay out of
+prose.
+
+**Built (2026-10-22).** `Project.expand_shortcodes` runs at the four
+places an export lifts a document's own prose — `_render_document`
+(own-prose path only; a chapter's assembled body is already-rendered
+child output and is never re-scanned), the chapter-opener prose in
+`compile_units`, `export_markdown`'s per-document body, and
+`export_docx` after the plain-text strip. The vocabulary is the slots':
+sidebar `${Metadata.Key}` rows against that document, binder values,
+compile counters — everything `_template_values` carries except
+`${Content}`, which would mean the prose itself. Conditionals stay in
+slots (prose gets values, not control flow); unknown keys render empty;
+html exports escape the expanded values. PDF inherits through DOCX.
+Ten tests in `tests/test_shortcode_prose.py`. Suite 555, exit 0;
+mutations caught (scene-prose expansion skipped, escaping removed,
+markdown expansion skipped).
+
+Still unbuilt from TEMPLATES.md §3.1, and now said so in the doc:
+metadata's inheritance chain (document → ancestor folders → project →
+application preferences) — prose and slots resolve only the document's
+own rows today.
+
 ## Print copies, and covers (near-term: the author needs book 1 and 2 on KDP)
 
 Two different DOCX jobs, and they must not be confused:

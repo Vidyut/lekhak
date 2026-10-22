@@ -1861,6 +1861,35 @@ class Project:
 
         return PLACEHOLDER_RE.sub(substitute, template)
 
+    def expand_shortcodes(self, document: Document, text: str, *,
+                          html: bool,
+                          extra: dict[str, str] | None = None) -> str:
+        """Expand ``${...}`` shortcodes inside a document's own prose.
+
+        Compile-time only: the stored file keeps the literal markers and
+        the editor shows them — the pull happens once, when an export
+        lifts the content, exactly as [[wiki links]] resolve at export
+        rather than at rest. The vocabulary is the slots' own (sidebar
+        ``${Metadata.Key}`` rows included, through _template_values);
+        ``${Content}`` never expands inside prose — it would mean the
+        prose itself — and conditionals stay out as documented: prose
+        gets values, not control flow. Unknown keys render empty,
+        exactly as in a slot.
+        """
+        from .templates import PLACEHOLDER_RE
+
+        if "${" not in text:
+            return text
+        values = self._template_values(document, content="", extra=extra)
+        values.pop("Content", None)
+
+        def substitute(match: re.Match) -> str:
+            key = match.group(1).strip()
+            value = values.get(key, "")
+            return escape(value) if html else value
+
+        return PLACEHOLDER_RE.sub(substitute, text)
+
     def _nearest_chapter_ancestor(self, document_id: str,
                                   parent_map: dict[str, str | None],
                                   kinds: dict[str, str]) -> str | None:
@@ -1883,6 +1912,11 @@ class Project:
                                        scope=scope, fmt=fmt, html=html)
         if not html:
             body = self.plain_text(body)
+        if content is None:
+            # Own prose only: a chapter's assembled body (content=) is
+            # already-rendered child output, never re-scanned.
+            body = self.expand_shortcodes(document, body, html=html,
+                                          extra=extra)
         values = self._template_values(document, content=body, extra=extra)
         if document.doc_template:
             override = templates.document_slot(document.doc_template, html=html)
@@ -2123,6 +2157,10 @@ class Project:
                     scope=scope, fmt=fmt, html=html)
                 if not html:
                     own = self.plain_text(own)
+                own = self.expand_shortcodes(
+                    document, own, html=html,
+                    extra=_template_numbers(in_template, chapter_number,
+                                            0, words_total))
                 if own.strip():
                     parts.append(own)
                 for index, scene in enumerate(chapter_scenes.get(document.id, [])):
@@ -2239,7 +2277,8 @@ class Project:
             content = self._prepare_links(
                 self.read_content(document.id), source_id=document.id,
                 scope=scope, fmt="markdown", html=False)
-            return markdown_from_html(content)
+            return self.expand_shortcodes(
+                document, markdown_from_html(content), html=False)
 
         blocks: list[str] = []
 
@@ -2413,7 +2452,9 @@ class Project:
             content = self._prepare_links(
                 self.read_content(document.id), source_id=document.id,
                 scope=scope, fmt="docx", html=True)
-            for paragraph_text in self.plain_text(content).split("\n"):
+            plain = self.expand_shortcodes(
+                document, self.plain_text(content), html=False)
+            for paragraph_text in plain.split("\n"):
                 if paragraph_text.strip():
                     self._docx_paragraph(output, paragraph_text.strip())
         # A4 is the baseline paper (Phase 1): an export with no page setup
