@@ -48,7 +48,10 @@ manuscript belongs to the project, in the inspector
 5. **Links & export defaults** — unpublished-link policy (plain text /
    keep-as-note / strip), the **default template set** for new work, and the
    **Author** default. This is where "defaults for new work" lives; the
-   project's own values override them in the inspector.
+   project's own values override them in the inspector. Also the
+   **Related files** toggle: the inspector's Mentions / Mentioned by scan,
+   on by default — an app-wide off switch for a project where it reads as
+   noise rather than help.
 6. **AI** — endpoint, model, key; the small-model warning from `docs/AI.md`;
    the `ollama pull` line; the proofreading prompt behind an accordion with
    its do-not-edit-unless-you-know warning.
@@ -80,6 +83,7 @@ the inspector, always wins). Nothing here is per-document.
 | Files & saving | reopen last project on start | `session/reopenLast` | app | on |
 | Pasting | four checkboxes | `paste/fonts`, `paste/paragraphs`, `paste/inline`, `paste/alignment` | app | as today |
 | Links & export | unpublished-link policy | `link_policy/default` | default | `keep-as-note` |
+| Links & export | Related files scan on/off | `related/enabled` | app | on |
 | Links & export | default template set | `templates/default` | default | `default` |
 | Links & export | Author | `metadata/Author` | default | empty |
 | AI | endpoint, model, key | `ai/endpoint`, `ai/model`, `ai/key` | app | Ollama on localhost |

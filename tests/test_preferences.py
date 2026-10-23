@@ -84,8 +84,8 @@ class PreferencesApplyTests(unittest.TestCase):
     def setUp(self):
         QSettings().remove("session/lastProject")
         for key in ("editor/autosaveMs", "session/reopenLast",
-                    "link_policy/default", "ai/prompt", "ui/fontSize",
-                    "ui/spellSquiggles"):
+                    "link_policy/default", "related/enabled", "ai/prompt",
+                    "ui/fontSize", "ui/spellSquiggles"):
             QSettings().remove(key)
         self.window = MainWindow()
 
@@ -94,6 +94,7 @@ class PreferencesApplyTests(unittest.TestCase):
         self.window.deleteLater()
         # The link default is global; leave it as found for later suites.
         QSettings().remove("link_policy/default")
+        QSettings().remove("related/enabled")
 
     def test_the_categories_persist_where_they_claim_to(self):
         QSettings().setValue("editor/autosaveMs", 1500)
@@ -117,6 +118,7 @@ class PreferencesApplyTests(unittest.TestCase):
             dialog.reopen_last_box.setChecked(False)
             dialog.link_default_box.setCurrentIndex(
                 dialog.link_default_box.findData("keep-as-note"))
+            dialog.related_box.setChecked(False)
             dialog.ai_prompt_edit.setPlainText("New contract.")
             return QDialog.Accepted
 
@@ -130,6 +132,9 @@ class PreferencesApplyTests(unittest.TestCase):
             bool(QSettings().value("session/reopenLast", True)))
         self.assertEqual(QSettings().value("link_policy/default"),
                          "keep-as-note")
+        # Absent key reads as the shipped default (on), so a dropped
+        # write cannot masquerade as an off switch.
+        self.assertFalse(bool(QSettings().value("related/enabled", True)))
         self.assertEqual(QSettings().value("ai/prompt"), "New contract.")
         # The autosave delay is live, not next-open: the running timer
         # picks the new interval up in the same call.

@@ -3819,12 +3819,16 @@ class MainWindow(QMainWindow):
         """Fill the Related files section (1.13): a fresh scan, never
         stored. Two groups — titles found in this document, and
         documents containing this one's title — each shown only when it
-        has members; no matches collapses the whole section.
+        has members; no matches collapses the whole section. The whole
+        scan is off when Preferences says so (related/enabled) — for a
+        project where it is more noise than help, off means off: no
+        scan runs and the section stays gone.
         """
         self.related_tree.clear()
         mentions: list = []
         mentioned_by: list = []
-        if self.project and self.current_id:
+        if (self.project and self.current_id
+                and QSettings().value("related/enabled", True, type=bool)):
             mentions, mentioned_by = self.project.related_documents(self.current_id)
         for label, documents in (("Mentions", mentions), ("Mentioned by", mentioned_by)):
             if not documents:
@@ -5124,6 +5128,11 @@ class MainWindow(QMainWindow):
                           dialog.reopen_last_box.isChecked())
         settings.setValue("link_policy/default",
                           dialog.link_default_box.currentData())
+        settings.setValue("related/enabled",
+                          dialog.related_box.isChecked())
+        # Live like the autosave interval: the section may be on screen
+        # under the dialog.
+        self._refresh_related()
         self.save_timer.setInterval(dialog.autosave_spin.value())
         # Squiggles share one toggle with the View menu action; going
         # through it keeps the menu check and the persisted setting

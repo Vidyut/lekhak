@@ -209,6 +209,15 @@ class PreferencesDialog(QDialog):
             "What a [[link]] pointing outside the current export "
             "becomes. This is the default for new work; each book can "
             "override it in the inspector, and the book's setting wins."))
+        self.related_box = QCheckBox("Show the Mentions / Mentioned by scan")
+        self.related_box.setChecked(
+            bool(store.value("related/enabled", True, type=bool)))
+        links_form.addRow(*_row(
+            "Related files", self.related_box,
+            "The inspector's auto-link scan: documents whose titles this "
+            "one's prose names, and documents naming this one. Helpful in "
+            "some projects, noise in others — switch it off and the "
+            "section disappears entirely."))
         author_default_note = QLabel(
             "A new project's Author starts empty — set the book's author "
             "in the inspector, where it travels with the manuscript.")

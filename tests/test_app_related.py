@@ -46,6 +46,9 @@ class RelatedFilesTests(unittest.TestCase):
         self.window.project = None
         self.project.close()
         self.temporary.cleanup()
+        # The off switch is installation-wide; later suites must find
+        # the shipped default, not this test's leftover.
+        QSettings().remove("related/enabled")
 
     def _group(self, label: str):
         tree = self.window.related_tree
@@ -91,6 +94,21 @@ class RelatedFilesTests(unittest.TestCase):
         self.window._related_clicked(group, 0)
 
         self.assertEqual(self.window.current_id, self.scene.id)
+
+    def test_the_preference_turns_the_whole_scan_off(self):
+        self.window._select_document(self.scene.id)
+        self.assertFalse(self.window.related_section.isHidden())
+
+        QSettings().setValue("related/enabled", False)
+        self.window._refresh_related()
+        self.assertTrue(self.window.related_section.isHidden())
+        self.assertEqual(self.window.related_tree.topLevelItemCount(), 0)
+
+        # A fresh selection must not resurrect it.
+        self.window._select_document(self.aaxyl.id)
+        self.window._select_document(self.scene.id)
+        self.assertTrue(self.window.related_section.isHidden())
+        self.assertEqual(self.window.related_tree.topLevelItemCount(), 0)
 
     def test_document_without_mentions_hides_the_section(self):
         self.window._select_document(self.scene.id)
