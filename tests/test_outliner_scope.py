@@ -64,6 +64,17 @@ class OutlinerScopeTests(unittest.TestCase):
         self.window.current_id = None
         self.assertEqual(self._titles(), ["Draft"])
 
+    def test_the_scope_follows_a_binder_click_without_a_tab_switch(self):
+        # The gap the first pass missed: while the Outliner tab is already
+        # showing, moving the binder selection used to leave the old rows
+        # up — only a tab change rebuilt them.
+        self.window.views.setCurrentWidget(self.window.outliner)
+        self.window._select_document(self.book.id)
+        self.assertEqual(
+            [self.window.outliner.topLevelItem(index).text(0)
+             for index in range(self.window.outliner.topLevelItemCount())],
+            ["One"])
+
 
 if __name__ == "__main__":
     unittest.main()

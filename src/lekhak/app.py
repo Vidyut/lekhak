@@ -3362,7 +3362,10 @@ class MainWindow(QMainWindow):
         # and this load path bypasses _content_changed's debounce.
         self._update_spell_squiggles()
         self._refresh_corkboard()
-        self._sync_outliner_selection()
+        # Rebuild, don't just re-select: the scope follows the selection
+        # (docs/UI-NOTES.md 2), so the rows change with it even while the
+        # Outliner tab is already the one showing. Sync runs inside.
+        self._refresh_outliner()
 
     def _content_changed(self) -> None:
         if not self.loading:
