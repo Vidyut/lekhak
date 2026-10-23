@@ -81,9 +81,10 @@ from .importer import (
 from .ywriter import import_yw7
 from .scrivener import import_scriv
 from .project import (
-    DEFAULT_LINK_POLICY, DEFAULT_PAGE_SETUP, EXPORT_KINDS, PAGE_TRIMS,
+    DEFAULT_PAGE_SETUP, EXPORT_KINDS, PAGE_TRIMS,
     Project, clean_page_setup, trim_id_for,
 )
+from .preferences import LINK_POLICY_CHOICES, PreferencesDialog
 from .pageview import PageView
 from .templates import (
     DOCUMENT_TEMPLATE_NAME_RE, EXTENSIONS, PLACEHOLDER_RE, SLOTS,
@@ -427,166 +428,6 @@ class ProjectReplaceDialog(QDialog):
             f"{counts['documents']} document(s).",
         )
         self.refresh_preview()
-
-
-# Display labels for the 2.2 strip policies, in UI order; the values are
-# the strings book_settings / the project setting store.
-LINK_POLICY_CHOICES = (
-    ("Strip unpublished", "strip"),
-    ("Plain text", "plain-text"),
-    ("Keep as note", "keep-as-note"),
-)
-
-
-class PreferencesDialog(QDialog):
-    def __init__(self, font_size: int, paste: dict[str, bool],
-                 link_policy: str | None = None,
-                 revision_author: str = "Author",
-                 ai_settings: "ai.AISettings | None" = None,
-                 tts_settings: "tts.TTSSettings | None" = None,
-                 tts_voices: list[str] | None = None,
-                 parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Preferences")
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
-        self.size_spin = QSpinBox()
-        self.size_spin.setRange(8, 24)
-        self.size_spin.setValue(font_size)
-        self.size_spin.setSuffix(" pt")
-        form.addRow("Interface font size:", self.size_spin)
-        self.link_policy_box = QComboBox()
-        for label, value in LINK_POLICY_CHOICES:
-            self.link_policy_box.addItem(label, value)
-        self.link_policy_box.setCurrentIndex(
-            max(0, self.link_policy_box.findData(link_policy or DEFAULT_LINK_POLICY))
-        )
-        # A project-wide default is a project property; without a project
-        # open the row stays visible but inert, so the vocabulary is
-        # discoverable before a book exists.
-        self.link_policy_box.setEnabled(link_policy is not None)
-        form.addRow("Unpublished links:", self.link_policy_box)
-        # Tracked changes (2.4): the Word-style byline on each change.
-        self.author_edit = QLineEdit(revision_author)
-        self.author_edit.setMaxLength(80)
-        form.addRow("Change author label:", self.author_edit)
-        layout.addLayout(form)
-        note = QLabel(
-            "Applies to menus, binder, corkboard, outliner and panels. "
-            "The writing editor keeps its own size and zoom."
-        )
-        note.setWordWrap(True)
-        layout.addWidget(note)
-        link_note = QLabel(
-            "What a [[link]] pointing outside the current export becomes "
-            "on export. A book folder can override this in the inspector."
-        )
-        link_note.setWordWrap(True)
-        layout.addWidget(link_note)
-
-        layout.addWidget(QLabel("When pasting, keep:"))
-        self.paste_fonts = QCheckBox("Fonts and colours")
-        self.paste_paragraphs = QCheckBox(
-            "Paragraph formatting — indents, line spacing, margins, "
-            "blank-line structure"
-        )
-        self.paste_inline = QCheckBox("Bold, italics and underline")
-        self.paste_alignment = QCheckBox("Alignment")
-        self.paste_fonts.setChecked(paste["fonts"])
-        self.paste_paragraphs.setChecked(paste["paragraphs"])
-        self.paste_inline.setChecked(paste["inline"])
-        self.paste_alignment.setChecked(paste["alignment"])
-        for box in (self.paste_fonts, self.paste_paragraphs,
-                    self.paste_inline, self.paste_alignment):
-            layout.addWidget(box)
-        paste_note = QLabel(
-            "Unchecked items are stripped when you paste. Ctrl+Shift+V "
-            "always pastes as plain text, and Edit → Paste and Keep "
-            "All Formatting ignores every box."
-        )
-        paste_note.setWordWrap(True)
-        layout.addWidget(paste_note)
-
-        # AI (2.4, layer 2): any OpenAI-compatible /chat/completions
-        # endpoint; Ollama's localhost server is the default and the
-        # key stays empty for local servers.
-        active_ai = ai_settings or ai.load_settings()
-        layout.addWidget(QLabel("AI endpoint (OpenAI-compatible):"))
-        ai_form = QFormLayout()
-        self.ai_endpoint_edit = QLineEdit(active_ai.endpoint)
-        self.ai_model_edit = QLineEdit(active_ai.model)
-        self.ai_model_edit.setPlaceholderText("e.g. qwen2.5:7b")
-        self.ai_key_edit = QLineEdit(active_ai.key)
-        self.ai_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.ai_key_edit.setPlaceholderText("empty for local servers")
-        ai_form.addRow("Endpoint:", self.ai_endpoint_edit)
-        ai_form.addRow("Model:", self.ai_model_edit)
-        ai_form.addRow("API key:", self.ai_key_edit)
-        layout.addLayout(ai_form)
-        ai_note = QLabel(
-            "Used by AI → Continue Scene and Proofread Selection. The "
-            "answer is always applied as a tracked change, never written "
-            "into the manuscript directly — and proofreading asks for "
-            "minimal edits: bloopers, not prose.\n"
-            "Local model (nothing leaves your computer): install Ollama, "
-            "then  ollama pull <model-name>  (e.g. ollama pull qwen2.5:7b). "
-            "The default endpoint http://localhost:11434/v1 already "
-            "matches Ollama.\n"
-            "Read this before you rely on it: a model that fits an "
-            "ordinary computer is a very small model, and small models "
-            "are error-prone — they manage typos and simple bloopers, "
-            "not unsupervised work, and prompt wording will need tuning."
-        )
-        ai_note.setWordWrap(True)
-        layout.addWidget(ai_note)
-
-        # Read aloud (3.1): voice and rate for Qt's QTextToSpeech.
-        # The engine connects when the dialog opens (the caller passes
-        # the names), so an empty list means this system has none.
-        active_tts = tts_settings or tts.load_settings()
-        layout.addWidget(QLabel("Read aloud voice:"))
-        tts_form = QFormLayout()
-        self.tts_voice_box = QComboBox()
-        for name in (tts_voices or []):
-            self.tts_voice_box.addItem(name)
-        if active_tts.voice:
-            index = self.tts_voice_box.findText(active_tts.voice)
-            if index >= 0:
-                self.tts_voice_box.setCurrentIndex(index)
-        tts_form.addRow("Voice:", self.tts_voice_box)
-        # QTextToSpeech rates run -1.0 .. 1.0; the slider holds
-        # hundredths so it stays a plain QSlider.
-        self.tts_rate_slider = QSlider(Qt.Horizontal)
-        self.tts_rate_slider.setRange(-100, 100)
-        self.tts_rate_slider.setValue(
-            round(max(-1.0, min(1.0, active_tts.rate)) * 100))
-        self.tts_rate_label = QLabel()
-        self._update_rate_label()
-        self.tts_rate_slider.valueChanged.connect(
-            self._update_rate_label)
-        rate_row = QHBoxLayout()
-        rate_row.addWidget(self.tts_rate_slider, 1)
-        rate_row.addWidget(self.tts_rate_label)
-        tts_form.addRow("Rate:", rate_row)
-        layout.addLayout(tts_form)
-        tts_note = QLabel(
-            "Used by Speak → Read Aloud: the selection, else the whole "
-            "scene. Left is slower, right is faster; ×1.00 is the "
-            "voice's normal pace."
-        )
-        tts_note.setWordWrap(True)
-        layout.addWidget(tts_note)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def _update_rate_label(self) -> None:
-        self.tts_rate_label.setText(
-            f"×{1.0 + self.tts_rate_slider.value() / 100.0:.2f}")
 
 
 # Sentinel for "the project itself" in place of a document id — project
@@ -2491,7 +2332,8 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.word_count_label)
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
-        self.save_timer.setInterval(700)
+        self.save_timer.setInterval(int(QSettings().value(
+            "editor/autosaveMs", 700, type=int)))
         self.save_timer.timeout.connect(self.save_current)
         # Spell squiggles (8): a debounced dictionary pass, off by
         # default — a fresh project lights up with invented names until
@@ -3888,7 +3730,7 @@ class MainWindow(QMainWindow):
             QApplication.setOverrideCursor(Qt.WaitCursor)
             try:
                 text = ai.complete(
-                    ai.PROOFREAD_SYSTEM,
+                    ai.proofread_system(),
                     selected,
                 )
             finally:
@@ -4028,6 +3870,8 @@ class MainWindow(QMainWindow):
         _switch_project). Any failure — moved, deleted, corrupt — falls
         back to the empty window; no dialog at startup.
         """
+        if not QSettings().value("session/reopenLast", True, type=bool):
+            return
         path = QSettings().value("session/lastProject", "", type=str)
         if not path or not Path(path).exists():
             return
@@ -4949,23 +4793,17 @@ class MainWindow(QMainWindow):
 
     def preferences(self) -> None:
         current = QApplication.font().pointSize()
-        # The link default (2.2) is a project property; None disables the
-        # row in the dialog rather than inventing a project-less store.
-        link_policy = (
-            self.project.get_setting("link_policy", DEFAULT_LINK_POLICY)
-            if self.project else None
-        )
         # The voice list needs a connected engine; _speech caches one
         # for the window, so this handshake is once per session.
         reader = self._speech()
-        dialog = PreferencesDialog(current, load_paste_prefs(), link_policy,
+        dialog = PreferencesDialog(current, load_paste_prefs(),
                                    revision_author(), ai.load_settings(),
                                    tts.load_settings(),
                                    reader.voice_names() if reader else [],
                                    parent=self)
         if dialog.exec() != QDialog.Accepted:
             return
-        size = dialog.size_spin.value()
+        size = dialog.size_slider.value()
         font = QApplication.font()
         font.setPointSize(size)
         QApplication.setFont(font)
@@ -4982,10 +4820,21 @@ class MainWindow(QMainWindow):
         settings.setValue("paste/alignment", dialog.paste_alignment.isChecked())
         settings.setValue("revisions/author",
                           dialog.author_edit.text().strip() or "Author")
+        settings.setValue("editor/autosaveMs", dialog.autosave_spin.value())
+        settings.setValue("session/reopenLast",
+                          dialog.reopen_last_box.isChecked())
+        settings.setValue("link_policy/default",
+                          dialog.link_default_box.currentData())
+        self.save_timer.setInterval(dialog.autosave_spin.value())
+        # Squiggles share one toggle with the View menu action; going
+        # through it keeps the menu check and the persisted setting
+        # honest, including the no-engine-on-this-system case.
+        self._toggle_spell_squiggles(dialog.spell_check_box.isChecked())
         ai.save_settings(ai.AISettings(
             endpoint=dialog.ai_endpoint_edit.text().strip(),
             model=dialog.ai_model_edit.text().strip(),
             key=dialog.ai_key_edit.text(),
+            prompt=dialog.ai_prompt_edit.toPlainText().strip(),
         ))
         tts.save_settings(tts.TTSSettings(
             voice=dialog.tts_voice_box.currentText(),
@@ -4995,14 +4844,9 @@ class MainWindow(QMainWindow):
         # next Read Aloud; apply it here too so a voice swap is instant.
         if self._reader is not None:
             self._reader.apply_settings()
-        if self.project:
-            self.project.set_setting(
-                "link_policy", dialog.link_policy_box.currentData())
-            self.statusBar().showMessage(
-                f"Interface font set to {size} pt; unpublished links "
-                f"default to {dialog.link_policy_box.currentText()}", 3000)
-        else:
-            self.statusBar().showMessage(f"Interface font set to {size} pt", 3000)
+        self.statusBar().showMessage(
+            f"Interface font set to {size} pt; unpublished links "
+            f"default to {dialog.link_default_box.currentText()}", 3000)
 
     def replace_in_project(self) -> None:
         if not self.project:

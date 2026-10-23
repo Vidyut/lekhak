@@ -46,6 +46,8 @@ from datetime import datetime, timezone
 from html import escape, unescape
 from pathlib import Path
 
+from PySide6.QtCore import QSettings
+
 from .templates import TemplateSet
 
 
@@ -2037,6 +2039,12 @@ class Project:
                               or document.id in containers)
                          else "page")
             breaks[document.id] = value
+        # The link-policy fallback chain: the book's own setting (above),
+        # then the app-level default from Preferences → Links & export,
+        # then the shipped constant — so a fresh install needs no stored
+        # value and an invalid hand-edit heals (UI-NOTES 4; docs/PREFERENCES.md).
+        app_default = str(QSettings().value(
+            "link_policy/default", DEFAULT_LINK_POLICY))
         return {
             "export_docs": export_docs,
             "breaks": breaks,
@@ -2050,7 +2058,8 @@ class Project:
             "book_settings": settings,
             "page_setup": page_setup,
             "global_policy": policy if policy in LINK_POLICIES
-            else DEFAULT_LINK_POLICY,
+            else (app_default if app_default in LINK_POLICIES
+                  else DEFAULT_LINK_POLICY),
         }
 
     def _link_policy(self, scope: dict, source_id: str | None) -> str:

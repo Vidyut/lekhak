@@ -59,6 +59,10 @@ class AISettings:
     endpoint: str = DEFAULT_ENDPOINT
     model: str = ""
     key: str = ""
+    # Empty means "use PROOFREAD_SYSTEM"; a stored copy is a writer who
+    # tuned the wording (docs/PREFERENCES.md, AI category, behind the
+    # accordion with the do-not-edit-unless-you-know warning).
+    prompt: str = ""
 
 
 def load_settings() -> AISettings:
@@ -67,6 +71,7 @@ def load_settings() -> AISettings:
         endpoint=str(settings.value("ai/endpoint", DEFAULT_ENDPOINT)),
         model=str(settings.value("ai/model", "")),
         key=str(settings.value("ai/key", "")),
+        prompt=str(settings.value("ai/prompt", "")),
     )
 
 
@@ -75,6 +80,13 @@ def save_settings(settings: AISettings) -> None:
     store.setValue("ai/endpoint", settings.endpoint or DEFAULT_ENDPOINT)
     store.setValue("ai/model", settings.model)
     store.setValue("ai/key", settings.key)
+    store.setValue("ai/prompt", settings.prompt)
+
+
+def proofread_system(settings: AISettings | None = None) -> str:
+    """The system prompt proofreading actually sends."""
+    prompt = (settings or load_settings()).prompt.strip()
+    return prompt or PROOFREAD_SYSTEM
 
 
 def _sends_key_in_the_clear(endpoint: str) -> bool:

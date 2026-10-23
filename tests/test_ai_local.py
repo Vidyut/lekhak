@@ -67,7 +67,7 @@ class PreferencesNoteTests(unittest.TestCase):
     def test_preferences_carry_the_pull_command_and_the_read_this(self):
         dialog = PreferencesDialog(
             12, {"fonts": True, "paragraphs": True, "inline": True,
-                 "alignment": True}, None, "Author",
+                 "alignment": True}, "Author",
             ai.AISettings(endpoint=ai.DEFAULT_ENDPOINT, model=""),
             None, [])
 

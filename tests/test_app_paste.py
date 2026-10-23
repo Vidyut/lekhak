@@ -354,7 +354,7 @@ class PreferencesDialogTests(unittest.TestCase):
 
         dialog = PreferencesDialog(11, load_paste_prefs())
 
-        self.assertEqual(dialog.size_spin.value(), 11)
+        self.assertEqual(dialog.size_slider.value(), 11)
         self.assertTrue(dialog.paste_fonts.isChecked())
         self.assertTrue(dialog.paste_inline.isChecked())
         self.assertTrue(dialog.paste_alignment.isChecked())

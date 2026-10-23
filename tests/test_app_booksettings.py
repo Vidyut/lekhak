@@ -346,36 +346,52 @@ class BookSettingsTests(unittest.TestCase):
         self.assertTrue(self.window.link_policy_box.isHidden())
         self.assertTrue(self.window.link_policy_label.isHidden())
 
-    def test_preferences_offers_and_saves_the_project_link_default(self):
+    def test_preferences_offer_the_app_link_default(self):
         from lekhak.app import PreferencesDialog
 
-        self.assertEqual(
-            self.project.get_setting("link_policy", "plain-text"),
-            "plain-text",
-        )
+        # Preferences edits the app-level default only; the project's
+        # own setting (per-book, inspector) must not be touched either
+        # way — that is the app-defaults vs per-project line (UI-NOTES 4).
+        QSettings().remove("link_policy/default")
         with patch.object(PreferencesDialog, "exec",
                           return_value=QDialog.Accepted):
             self.window.preferences()
         self.assertEqual(
-            self.project.get_setting("link_policy"), "plain-text")
+            QSettings().value("link_policy/default"), "plain-text")
+        self.assertEqual(self.project.get_setting("link_policy"), "")
+        QSettings().remove("link_policy/default")
 
+        QSettings().setValue("link_policy/default", "strip")
         dialog = PreferencesDialog(11, {"fonts": False, "paragraphs": False,
-                                        "inline": False, "alignment": False},
-                                   "strip")
+                                        "inline": False, "alignment": False})
         try:
-            self.assertEqual(dialog.link_policy_box.currentData(), "strip")
-            self.assertTrue(dialog.link_policy_box.isEnabled())
+            self.assertEqual(dialog.link_default_box.currentData(), "strip")
+            # Always editable: it is this installation's default, not a
+            # property of whatever book happens to be open.
+            self.assertTrue(dialog.link_default_box.isEnabled())
         finally:
             dialog.deleteLater()
+            # The app default is global: leave it as found, or later
+            # suites inherit "strip" through the export chain.
+            QSettings().remove("link_policy/default")
 
-        # No project open: the row stays visible but inert.
-        bare = PreferencesDialog(11, {"fonts": False, "paragraphs": False,
-                                      "inline": False, "alignment": False},
-                                 None)
-        try:
-            self.assertFalse(bare.link_policy_box.isEnabled())
-        finally:
-            bare.deleteLater()
+    def test_the_app_link_default_reaches_an_unset_book(self):
+        # The dialog stores link_policy/default; an export with no book
+        # override and no project setting must actually obey it
+        # (docs/PREFERENCES.md), or the row in Preferences is decoration.
+        self.project.write_content(
+            self.chapter.id,
+            "<p>See [[Marginally Human]] for the rest.</p>")
+        destination = Path(self.temporary.name) / "book.html"
+        self.project.export_html(destination, {self.chapter.id})
+        self.assertIn("See Marginally Human for the rest.",
+                      destination.read_text(encoding="utf-8"))
+
+        QSettings().setValue("link_policy/default", "strip")
+        self.addCleanup(QSettings().remove, "link_policy/default")
+        self.project.export_html(destination, {self.chapter.id})
+        self.assertNotIn("Marginally Human",
+                         destination.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
