@@ -2856,7 +2856,10 @@ class MainWindow(QMainWindow):
                     progressed = True
             if not progressed:
                 break
-        self.tree.expandAll()
+        # Collapsed is the resting state (bug report): opening every folder
+        # on load buried the structure under its contents. The path to the
+        # selection is opened in _selection_changed instead.
+        self.tree.collapseAll()
         self.loading = False
         if select_id and select_id in items:
             self.tree.setCurrentItem(items[select_id])
@@ -3227,6 +3230,7 @@ class MainWindow(QMainWindow):
         # Squiggles go stale the moment the text changes underneath,
         # and this load path bypasses _content_changed's debounce.
         self._update_spell_squiggles()
+        self._reveal_tree_path(current)
         self._refresh_corkboard()
         # Rebuild, don't just re-select: the scope follows the selection
         # (docs/UI-NOTES.md 2), so the rows change with it even while the
@@ -3999,6 +4003,20 @@ class MainWindow(QMainWindow):
             " border-radius: 8px; padding: 10px 12px; margin: 2px; }\n"
             f"QListWidget::item:selected {{ border: 2px solid {accent}; }}\n"
         )
+
+    def _reveal_tree_path(self, item) -> None:
+        """Open the ancestors of the selected item, and nothing else.
+
+        The selection has to be visible; its siblings' contents are the
+        writer's business only when they ask. Collapsed everywhere else is
+        what keeps the binder showing structure rather than text.
+        """
+        if item is None:
+            return
+        parent = item.parent()
+        while parent is not None:
+            parent.setExpanded(True)
+            parent = parent.parent()
 
     def _refresh_corkboard(self) -> None:
         self.corkboard.clear()
