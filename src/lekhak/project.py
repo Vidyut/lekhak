@@ -1017,9 +1017,21 @@ class Project:
         Computed fresh from titles and prose on every call: nothing is
         stored, so a retitle or an edit heals itself and no relation can
         go stale. Whole-word phrase match (word-character boundaries,
-        case-insensitive) so "Rid" never matches inside "Ridnam"; the
-        document itself is excluded. Every kind of title is vocabulary —
-        chapters and folders may be names a scene mentions too.
+        case-insensitive) so "Rid" never matches inside "Ridnam". Two
+        rules on top of that:
+
+        - **Never itself.** A document is not related to the same
+          document (docs/MODEL.md); a Prologue mentioning "Prologue" is
+          still just the Prologue.
+        - **A Chapter's title must match exactly, case included.** Chapter
+          titles are often common words — the lowercase "prologue" in
+          "the prologue of the letter" is not a reference to the chapter
+          *Prologue*, while writing "Prologue" as it is titled is. The
+          rule keys on whose title is being matched: ``mentions`` matches
+          the other documents' titles, ``mentioned_by`` matches this one's
+          — so a Type of Chapter anywhere earns the strict rule.
+          Everything else keeps the case-insensitive match: names are
+          vocabulary however the writer typed them.
         """
         documents = self.documents()
         target = next((d for d in documents if d.id == document_id), None)
@@ -1027,17 +1039,26 @@ class Project:
             return [], []
         texts = self._plain_texts()
         own_text = texts.get(document_id, "")
-        own_title = target.title.strip().casefold()
+        own_title = target.title.strip()
+        own_exact = self.type_of(target) == "Chapter"
         mentions: list[Document] = []
         mentioned_by: list[Document] = []
         for document in documents:
             if document.id == document_id:
                 continue
-            title = document.title.strip().casefold()
+            title = document.title.strip()
             if title and self._mentions_phrase(own_text, title):
-                mentions.append(document)
-            if own_title and self._mentions_phrase(texts.get(document.id, ""), own_title):
-                mentioned_by.append(document)
+                # An exact match is a subset of the loose one, so the
+                # strict re-check runs only on candidates that already
+                # matched — one type_of per hit, not per document.
+                if (self.type_of(document) != "Chapter"
+                        or self._mentions_phrase(own_text, title, exact=True)):
+                    mentions.append(document)
+            other_text = texts.get(document.id, "")
+            if own_title and self._mentions_phrase(other_text, own_title):
+                if (not own_exact
+                        or self._mentions_phrase(other_text, own_title, exact=True)):
+                    mentioned_by.append(document)
         return mentions, mentioned_by
 
     def _plain_texts(self) -> dict[str, str]:
@@ -1067,12 +1088,16 @@ class Project:
         return texts
 
     @staticmethod
-    def _mentions_phrase(text: str, phrase: str) -> bool:
-        r"""Whole-word case-insensitive ``phrase`` inside ``text``.
+    def _mentions_phrase(text: str, phrase: str, *, exact: bool = False) -> bool:
+        r"""Whole-word ``phrase`` inside ``text``.
 
         (?<!\w)/(?!\w) rather than \b so titles that start or end with
         punctuation still bind correctly, and both sides are casefolded
-        so a match survives every case difference the writer typed.
+        so a match survives every case difference the writer typed —
+        unless ``exact`` is set, which keeps the writer's case: a Chapter
+        is mentioned only when its title appears as it is written, not by
+        a common word in another case ("the prologue of the letter" is no
+        reference to the chapter *Prologue*). See related_documents.
 
         Two things are deliberately *not* mentions:
 
@@ -1086,8 +1111,12 @@ class Project:
         """
         if not text or not phrase or not any(ch.isalpha() for ch in phrase):
             return False
+        haystack = URL_RE.sub(" ", text)
+        if exact:
+            pattern = r"(?<!\w)" + re.escape(phrase) + r"(?!\w)"
+            return re.search(pattern, haystack) is not None
         pattern = r"(?<!\w)" + re.escape(phrase.casefold()) + r"(?!\w)"
-        return re.search(pattern, URL_RE.sub(" ", text).casefold()) is not None
+        return re.search(pattern, haystack.casefold()) is not None
 
     def search(self, query: str) -> list[Document]:
         """Documents whose title, synopsis or body text contains ``query``.
