@@ -434,10 +434,24 @@ class ProjectReplaceDialog(QDialog):
 # metadata is edited whenever the inspector shows folder/root fields (1.12).
 # Document ids are uuid4 hex, so the two vocabularies cannot collide.
 PROJECT_METADATA_TARGET = "project"
+# The Type dropdown's built-in suggestions (docs/MODEL.md): we don't know
+# how the writer will use a folder, so we assume the novel-writing roles
+# and let anything else be typed. Typed values are stored, and every Type
+# already used in the project joins the list on the next dropdown.
+TYPE_SUGGESTIONS = [
+    "Folder", "Document", "Book", "Chapter", "Scene", "Part", "Section",
+    "Front Matter", "Back Matter", "Author Profile", "Glossary",
+    "Bibliography", "Research", "Note", "Do not print",
+]
 
 
 class MetadataTable(QTableWidget):
-    """The Field / Value / Type / Choices grid for metadata rows.
+    """The Field / Value / Format grid for metadata rows.
+
+    The third column is the value *widget* format (Text / Text area /
+    Checkbox / Date) — named Format, not Type, because Type is the
+    protected metadata key that carries an item's role (docs/MODEL.md)
+    and the two must not share a word.
 
     Extracted from MetadataDialog (1.12) so the right-hand inspector can
     host exactly the same rows inline: the dialog wraps it with Save and
@@ -460,7 +474,7 @@ class MetadataTable(QTableWidget):
     def __init__(self, entries: dict[str, tuple[str, str, list[str]]],
                  parent=None) -> None:
         super().__init__(0, 3, parent)
-        self.setHorizontalHeaderLabels(["Field", "Value", "Type"])
+        self.setHorizontalHeaderLabels(["Field", "Value", "Format"])
         self.horizontalHeader().setStretchLastSection(False)
         self.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -2058,6 +2072,9 @@ class MainWindow(QMainWindow):
         # leaving a cell mid-selection-change) still lands where it came
         # from instead of following current_id (1.12).
         self._metadata_target: str | None = None
+        self._type_target_id: str | None = None
+        self._type_snapping = False
+        self._type_near_miss_text = ""
         # Read aloud (3.1): the engine connects on first use, not here —
         # a speech-dispatcher handshake costs real time and most
         # sessions never speak.
@@ -2235,9 +2252,43 @@ class MainWindow(QMainWindow):
             "Which rendered layout this document pulls from its book's "
             "template set — Automatic is the book's own choice.")
 
-        # Metadata (1.12): the same Field/Type/Options/Value rows the Edit
-        # Metadata dialog edits, inline and live — project-level fields on
-        # folders/root, the document's own rows everywhere else.
+        # Type (docs/MODEL.md): the protected role, as an editable
+        # dropdown — the novel-writing defaults, plus every Type this
+        # project already uses (so a once-typed value, typo included, is
+        # selectable rather than re-typed), plus free text. Pre-filled
+        # from type_of(), so it is never empty; clearing it returns the
+        # item to its derived default. An unrecognised value is fine —
+        # template matching falls through to the hardcoded baseline.
+        self.type_label = QLabel("Type")
+        self.type_label.setToolTip(
+            "What this is. Type tells Lekhak how to format and export it — "
+            "a folder with Type: Book is a book, Type: Chapter gets a "
+            "chapter heading, and ‘Do not print’ with a blank template "
+            "stays out of the book. The list is for SELECTING a type; the "
+            "box is only for ADDING a new one — check first that what you "
+            "want isn't already there, and select it if it is. A type you "
+            "add looks the same as a built-in one until you give it its "
+            "own template. Empty returns the derived default "
+            "(Folder, Document, Chapter…)."
+        )
+        self.type_box = QComboBox()
+        self.type_box.setEditable(True)
+        self.type_box.setToolTip(self.type_label.toolTip())
+        self.type_box.currentIndexChanged.connect(self._type_changed)
+        self.type_box.lineEdit().setPlaceholderText("Folder, Document, Book…")
+        self.type_box.lineEdit().editingFinished.connect(self._type_changed)
+        self.type_warning = QLabel()
+        self.type_warning.setWordWrap(True)
+        self.type_warning.setVisible(False)
+        self.type_keep_box = QCheckBox("Keep it as a separate type")
+        self.type_keep_box.setVisible(False)
+        self.type_keep_box.toggled.connect(self._type_keep_toggled)
+
+        # Metadata (1.12): the same Field/Format/Options/Value rows the
+        # Edit Metadata dialog edits, inline and live — project-level
+        # fields on folders/root, the document's own rows everywhere
+        # else. The Type row above owns the protected key, which never
+        # appears as a table row.
         self.metadata_table = MetadataTable({})
         self.metadata_table.changed.connect(self._metadata_table_changed)
         self.metadata_add_button = QPushButton("Add field")
@@ -2264,7 +2315,14 @@ class MainWindow(QMainWindow):
         inspector_layout.addWidget(self.link_policy_box)
         inspector_layout.addWidget(self.doc_template_label)
         inspector_layout.addWidget(self.doc_template_box)
-        inspector_layout.addWidget(QLabel("Metadata"))
+        type_row = QHBoxLayout()
+        type_row.addWidget(self.type_label)
+        type_row.addWidget(self.type_box, 1)
+        inspector_layout.addSpacing(8)
+        inspector_layout.addLayout(type_row)
+        inspector_layout.addWidget(self.type_warning)
+        inspector_layout.addWidget(self.type_keep_box)
+        inspector_layout.addWidget(QLabel("Custom fields"))
         inspector_layout.addWidget(self.metadata_table)
         metadata_buttons = QHBoxLayout()
         metadata_buttons.addWidget(self.metadata_add_button)
@@ -2535,6 +2593,7 @@ class MainWindow(QMainWindow):
         self.page_setup_button.setEnabled(enabled)
         self.link_policy_box.setEnabled(enabled)
         self.doc_template_box.setEnabled(enabled)
+        self.type_box.setEnabled(enabled)
         self.metadata_table.setEnabled(enabled)
         self.metadata_add_button.setEnabled(enabled)
         self.metadata_remove_button.setEnabled(enabled)
@@ -2808,7 +2867,7 @@ class MainWindow(QMainWindow):
             item = QTreeWidgetItem([document.title])
             item.setData(0, Qt.UserRole, document.id)
             item.setData(0, Qt.UserRole + 1, document.kind)
-            item.setToolTip(0, document.kind.capitalize())
+            item.setToolTip(0, self.project.type_of(document))
             if document.kind == "folder":
                 item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
             if document.id in in_template:
@@ -2929,7 +2988,10 @@ class MainWindow(QMainWindow):
                 if column_id == "title":
                     cells.append(document.title)
                 elif column_id == "kind":
-                    cells.append(document.kind.capitalize())
+                    # The role, not the physical kind: the writer sets
+                    # Type, and un-set items show the derived default
+                    # (docs/MODEL.md).
+                    cells.append(self.project.type_of(document))
                 elif column_id == "words":
                     cells.append(f"{rollups.get(document.id, document.word_count):,}")
                 elif column_id == "target":
@@ -3094,7 +3156,7 @@ class MainWindow(QMainWindow):
 
     def _pick_link_target(self, target: str) -> None:
         matches = self.project.resolve_link(target)
-        labels = [f"{d.title}  ({d.kind})" for d in matches]
+        labels = [f"{d.title}  ({self.project.type_of(d)})" for d in matches]
         chosen, accepted = QInputDialog.getItem(
             self, "Follow link", f"‘{target}’ matches several sections:",
             labels, 0, False,
@@ -3535,23 +3597,161 @@ class MainWindow(QMainWindow):
         """Point the inspector's metadata section at the current selection.
 
         Silent on its own: set_entries swallows the table's own signals,
-        so a repopulation never reads as an edit.
+        so a repopulation never reads as an edit. The Type row follows
+        the *document* (folders included, where the table below shows
+        project fields); it is always filled — stored Type, else the
+        derived default — and the dropdown seeds itself with every Type
+        the project already uses, so a typed value is selectable next
+        time.
         """
         target = self._selection_metadata_target()
         self._metadata_target = target
+        current = self._current_document()
+        self._type_target_id = current.id if current else None
+        if current is None or self.project is None:
+            self.type_box.hide()
+            self.type_label.hide()
+        else:
+            self.type_box.show()
+            self.type_label.show()
+            self._fill_type_box(self.project.type_of(current))
         if target is None:
             self.metadata_table.set_entries({})
         elif target == PROJECT_METADATA_TARGET:
             self.metadata_table.set_entries(self.project.project_metadata())
         else:
-            self.metadata_table.set_entries(self.project.metadata_entries(target))
+            # Type is never a table row: the Type row above owns the
+            # protected key (docs/MODEL.md).
+            entries = self.project.metadata_entries(target)
+            self.metadata_table.set_entries(
+                {key: entry for key, entry in entries.items() if key != "Type"}
+            )
+
+    def _fill_type_box(self, value: str) -> None:
+        """Rebuild the Type dropdown and set it, without firing saves.
+
+        Options are the built-in suggestions plus every Type this
+        project uses — deduplicated case-insensitively so the list never
+        shows both 'Chapter' and 'chapter'.
+        """
+        previous, self.loading = self.loading, True
+        try:
+            self.type_box.clear()
+            # Every option stays in the list, the current value included:
+            # dropping it would leave free text that findText cannot
+            # resolve, so the exact-match snap could never fire. The
+            # current value shows through the line edit, not the index.
+            seen: set[str] = set()
+            for item in TYPE_SUGGESTIONS:
+                self.type_box.addItem(item)
+                seen.add(item.casefold())
+            if self.project:
+                # Case-insensitive against the built-ins only: 'chapter'
+                # is a distinct value the writer typed, so it is added.
+                for item in self.project.type_values():
+                    if item.casefold() not in seen:
+                        self.type_box.addItem(item)
+                        seen.add(item.casefold())
+            self.type_box.setCurrentText(value)
+            self.type_warning.setVisible(False)
+            self.type_keep_box.setChecked(False)
+            self.type_keep_box.setVisible(False)
+            self._type_near_miss_text = ""
+        finally:
+            self.loading = previous
+
+    def _type_changed(self) -> None:
+        if self.loading or self._type_snapping:
+            return
+        self._type_snap_check()
+        self._save_metadata()
+
+    def _type_keep_toggled(self, checked: bool) -> None:
+        """The near-miss checkbox: ticked = keep the typed variant.
+
+        The default snapped it to the existing option; ticking restores
+        what was typed (and saves it). Unticking offers the snap again.
+        """
+        if self.loading:
+            return
+        if checked and self._type_near_miss_text:
+            self._type_snapping = True
+            try:
+                self.type_box.setCurrentText(self._type_near_miss_text)
+            finally:
+                self._type_snapping = False
+            self._save_metadata()
+        elif not checked:
+            self._type_snap_check()
+
+    def _type_snap_check(self) -> None:
+        """Idiot-proof the Type box (docs/MODEL.md).
+
+        An exact match selects that option — nothing new is added. A
+        case-only variant ('book' when 'Book' exists) snaps to the
+        existing option too, and the warning says so, offering the
+        'Keep it as a separate type' checkbox to restore the variant.
+        """
+        text = self.type_box.currentText().strip()
+        if self.type_keep_box.isChecked() and text:
+            # The writer chose this variant; leave it alone.
+            return
+        self.type_warning.setVisible(False)
+        self.type_keep_box.setVisible(False)
+        self._type_near_miss_text = ""
+        if not text:
+            return
+        exact = -1
+        near = -1
+        for index in range(self.type_box.count()):
+            item = self.type_box.itemText(index)
+            if item == text:
+                exact = index
+                break
+            if near < 0 and item.casefold() == text.casefold():
+                near = index
+        if exact >= 0:
+            self._snap_to_type(exact)
+            return
+        if near >= 0:
+            existing = self.type_box.itemText(near)
+            self._type_near_miss_text = text
+            self.type_warning.setText(
+                f"“{text}” looks like the existing type “{existing}”, "
+                "so that is what was selected. Tick below only if you "
+                "really want both — this box is for ADDING new types, "
+                "and a new type looks the same as a built-in one until "
+                "a template says otherwise."
+            )
+            self.type_warning.setVisible(True)
+            self.type_keep_box.setVisible(True)
+            self._snap_to_type(near)
+
+    def _snap_to_type(self, index: int) -> None:
+        """Select an existing option instead of storing a duplicate."""
+        # An editable box keeps a stale index while free text is typed,
+        # so the guard is on the text: a differing text means the snap
+        # has real work even when the index already matches.
+        if (self.type_box.currentIndex() == index
+                and self.type_box.currentText() == self.type_box.itemText(index)):
+            return
+        self._type_snapping = True
+        try:
+            self.type_box.setCurrentIndex(index)
+        finally:
+            self._type_snapping = False
 
     def _metadata_table_changed(self) -> None:
-        """Live save of the rows the inspector is showing.
+        self._save_metadata()
 
-        Writes to _metadata_target, the target captured when the table was
-        populated — an edit whose signal lands just after the selection
-        moved must not follow current_id into another document.
+    def _save_metadata(self) -> None:
+        """Live save of the metadata section: the Type row plus the table.
+
+        Type is protected (docs/MODEL.md): it always lives on the
+        document's own metadata — folders included, where the table
+        itself edits project fields — and never as a table row. A row
+        named Type in the table is absorbed into the Type row rather
+        than stored twice.
         """
         if self.loading or not self.project or not self._metadata_target:
             return
@@ -3568,12 +3768,52 @@ class MainWindow(QMainWindow):
                 # (the blank row then simply drops out of the subset), or
                 # is removed outright.
                 return
-        if self._metadata_target == PROJECT_METADATA_TARGET:
+        values.pop("Type", None)
+        value_types.pop("Type", None)
+        options.pop("Type", None)
+        target = self._metadata_target
+        if target == PROJECT_METADATA_TARGET:
             self.project.set_project_metadata(
                 {key: (values[key], value_types[key], options[key]) for key in values}
             )
+            if self._type_target_id:
+                self._write_document_type(self._type_target_id, None)
         else:
-            self.project.set_metadata(self._metadata_target, values, value_types, options)
+            self._write_document_type(target, (values, value_types, options))
+
+    def _write_document_type(self, document_id: str,
+                             fields: tuple | None) -> None:
+        """Write one document's own metadata, with Type from the Type row.
+
+        ``fields`` is the (values, value_types, options) triple to store
+        beside Type; None means keep every stored key and rewrite only
+        Type — the folder case, where the table edits project fields.
+        An empty Type row means unset: the key is dropped and type_of
+        derives the default again. A value equal to the derived default
+        is *not* written — storage stays clean and type_of shows the
+        same word either way; an explicit change is stored.
+        """
+        document = next(
+            (d for d in self.project.documents() if d.id == document_id), None)
+        stored = self.project.metadata_entries(document_id)
+        if fields is None:
+            values = {k: v[0] for k, v in stored.items() if k != "Type"}
+            value_types = {k: v[1] for k, v in stored.items() if k != "Type"}
+            options = {k: v[2] for k, v in stored.items() if k != "Type"}
+        else:
+            values, value_types, options = (
+                dict(fields[0]), dict(fields[1]), dict(fields[2]))
+        values.pop("Type", None)
+        value_types.pop("Type", None)
+        options.pop("Type", None)
+        type_value = self.type_box.currentText().strip()
+        if type_value and document is not None:
+            if ("Type" in stored
+                    or type_value != self.project.default_type(document)):
+                values["Type"] = type_value
+                value_types["Type"] = "text"
+                options["Type"] = []
+        self.project.set_metadata(document_id, values, value_types, options)
 
     def _refresh_related(self) -> None:
         """Fill the Related files section (1.13): a fresh scan, never
@@ -3591,9 +3831,10 @@ class MainWindow(QMainWindow):
                 continue
             group = QTreeWidgetItem([label])
             for document in documents:
-                child = QTreeWidgetItem([f"{document.title}  ({document.kind})"])
+                child = QTreeWidgetItem(
+                    [f"{document.title}  ({self.project.type_of(document)})"])
                 child.setData(0, Qt.UserRole, document.id)
-                child.setToolTip(0, document.kind.capitalize())
+                child.setToolTip(0, self.project.type_of(document))
                 group.addChild(child)
             self.related_tree.addTopLevelItem(group)
             group.setExpanded(True)
@@ -4247,7 +4488,13 @@ class MainWindow(QMainWindow):
         if target == PROJECT_METADATA_TARGET:
             entries = self.project.project_metadata()
         else:
-            entries = self.project.metadata_entries(target)
+            # Type is the inspector's row (docs/MODEL.md); the dialog
+            # edits the rest and must not drop the protected key.
+            entries = {
+                key: entry for key, entry in
+                self.project.metadata_entries(target).items()
+                if key != "Type"
+            }
         dialog = MetadataDialog(entries, self)
         if dialog.exec() == QDialog.Accepted:
             values, value_types, options = dialog.values_types_options()
@@ -4256,6 +4503,11 @@ class MainWindow(QMainWindow):
                     {key: (values[key], value_types[key], options[key]) for key in values}
                 )
             else:
+                stored_type = self.project.metadata(target).get("Type", "").strip()
+                if stored_type:
+                    values["Type"] = stored_type
+                    value_types["Type"] = "text"
+                    options["Type"] = []
                 self.project.set_metadata(target, values, value_types, options)
             self.statusBar().showMessage("Metadata saved", 2000)
             self._populate_metadata_table()

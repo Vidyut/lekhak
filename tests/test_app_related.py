@@ -70,7 +70,7 @@ class RelatedFilesTests(unittest.TestCase):
         self.assertIsNotNone(group)
         children = [group.child(index).text(0)
                     for index in range(group.childCount())]
-        self.assertEqual(children, ["Aaxyl  (note)"])
+        self.assertEqual(children, ["Aaxyl  (Note)"])
 
     def test_clicking_a_related_document_jumps_there(self):
         self.window._select_document(self.scene.id)

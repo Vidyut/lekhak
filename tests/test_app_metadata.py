@@ -270,7 +270,9 @@ class MetadataPanelTests(unittest.TestCase):
     def test_column_order_puts_value_next_to_the_field(self):
         table = self.window.metadata_table
         headers = [table.horizontalHeaderItem(i).text() for i in range(3)]
-        self.assertEqual(headers, ["Field", "Value", "Type"])
+        # "Format", not "Type": Type is the protected role key
+        # (docs/MODEL.md) and must not share a word with the widget column.
+        self.assertEqual(headers, ["Field", "Value", "Format"])
 
     def test_scrivener_long_date_opens_in_the_picker_as_a_real_date(self):
         self.project.set_metadata(
@@ -285,6 +287,154 @@ class MetadataPanelTests(unittest.TestCase):
         self.assertEqual(
             self.window.metadata_table.row_value(0), "2443-01-07"
         )
+
+
+class TypeRowTests(unittest.TestCase):
+    """The protected Type row (docs/MODEL.md): always filled, never a
+    table row, snaps typos, and keeps folder/Type separate from the
+    project fields the table shows on folders."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.project = Project.create(Path(self.temporary.name) / "Novel")
+        self.folder = self.project.documents()[0]          # Draft
+        self.scene = self.project.add_document(
+            "Scene", parent_id=self.folder.id, kind="scene"
+        )
+        self.window = MainWindow()
+        self.window._switch_project(self.project)
+
+    def tearDown(self):
+        self.window.project = None
+        self.project.close()
+        self.temporary.cleanup()
+
+    def test_type_row_shows_the_derived_default_and_hides_it_in_the_table(self):
+        self.window._select_document(self.scene.id)
+
+        self.assertEqual(self.window.type_box.currentText(), "Scene")
+        # Type is never a table row.
+        keys = [self.window.metadata_table.item(row, 0).text()
+                for row in range(self.window.metadata_table.rowCount())]
+        self.assertNotIn("Type", keys)
+
+    def test_type_never_appears_as_a_table_row_even_if_stored(self):
+        self.project.set_metadata(self.scene.id, {"Type": "Chapter"})
+
+        self.window._select_document(self.scene.id)
+
+        self.assertEqual(self.window.type_box.currentText(), "Chapter")
+        keys = [self.window.metadata_table.item(row, 0).text()
+                for row in range(self.window.metadata_table.rowCount())]
+        self.assertNotIn("Type", keys)
+
+    def test_setting_type_persists_to_the_document(self):
+        self.window._select_document(self.scene.id)
+
+        self.window.type_box.setCurrentText("Short story")
+        self.window._save_metadata()
+
+        self.assertEqual(
+            self.project.metadata(self.scene.id)["Type"], "Short story")
+
+    def test_clearing_type_returns_to_the_derived_default(self):
+        self.project.set_metadata(self.scene.id, {"Type": "Short story"})
+        self.window._select_document(self.scene.id)
+
+        self.window.type_box.setCurrentText("")
+        self.window._save_metadata()
+
+        self.assertNotIn("Type", self.project.metadata(self.scene.id))
+        self.assertEqual(self.project.type_of(self.scene), "Scene")
+
+    def test_default_type_is_not_written_to_storage(self):
+        self.window._select_document(self.scene.id)
+
+        self.window._save_metadata()   # nothing changed; Scene is derived
+
+        self.assertNotIn("Type", self.project.metadata(self.scene.id))
+
+    def test_exact_match_snaps_to_the_existing_option(self):
+        self.window._select_document(self.scene.id)
+
+        # setText, not setCurrentText: typing a free value. "Scene" is the
+        # box's pre-filled value at index 0, and lives at findText("Scene")
+        # — a working snap must move the index there, so a no-op fails.
+        self.window.type_box.lineEdit().setText("Scene")
+        self.window._type_changed()    # what editingFinished runs
+
+        self.assertEqual(self.window.type_box.currentIndex(),
+                         self.window.type_box.findText("Scene"))
+        # "Scene" is this scene's derived default, so it is not written to
+        # storage — _write_document_type keeps defaults out on purpose.
+
+    def test_case_variant_snaps_and_offers_the_checkbox(self):
+        self.window._select_document(self.scene.id)
+
+        self.window.type_box.lineEdit().setText("chapter")
+        self.window._type_changed()
+
+        # Snapped to the existing spelling; the warning offers the variant.
+        self.assertEqual(self.window.type_box.currentText(), "Chapter")
+        self.assertFalse(self.window.type_warning.isHidden())
+        self.assertFalse(self.window.type_keep_box.isHidden())
+        self.assertEqual(
+            self.project.metadata(self.scene.id)["Type"], "Chapter")
+
+        # Ticking restores the typed variant and saves it.
+        self.window.type_keep_box.setChecked(True)
+        self.assertEqual(self.window.type_box.currentText(), "chapter")
+        self.assertEqual(
+            self.project.metadata(self.scene.id)["Type"], "chapter")
+
+    def test_dropdown_lists_types_the_project_already_uses(self):
+        self.project.set_metadata(self.scene.id, {"Type": "Weird"})
+        self.other = self.project.add_document(
+            "Other", parent_id=self.folder.id, kind="scene")
+        # add_document doesn't rebuild the binder; without this the
+        # selection can't find the new item and the panel stays put.
+        self.window._reload_tree()
+        self.window._select_document(self.other.id)
+
+        items = [self.window.type_box.itemText(i)
+                 for i in range(self.window.type_box.count())]
+        self.assertIn("Weird", items)
+        # "Scene" is the selected doc's value, consumed into `seen` and so
+        # deliberately not repeated as its own dropdown entry.
+
+    def test_folder_type_is_the_folders_own_not_the_projects(self):
+        self.window._select_document(self.folder.id)
+
+        self.assertEqual(self.window.type_box.currentText(), "Folder")
+        self.window.type_box.setCurrentText("Book")
+        self.window._save_metadata()
+
+        self.assertEqual(self.project.metadata(self.folder.id)["Type"],
+                         "Book")
+        # The custom-fields table on a folder is the project's; the Type
+        # row never lands there.
+        self.assertNotIn("Type", self.project.project_metadata())
+        self.assertEqual(self.project.type_of(self.folder), "Book")
+
+    def test_book_folder_defaults_to_book(self):
+        self.project.set_book_settings(self.folder.id, {"template": "x"})
+        # Changing book settings fires no selection signal, and the
+        # folder may already be current — repopulate to pick up the heal.
+        self.window._reload_tree()
+        self.window._select_document(self.folder.id)
+        self.window._populate_metadata_table()
+
+        self.assertEqual(self.window.type_box.currentText(), "Book")
+
+    def test_type_row_is_hidden_with_no_document_selected(self):
+        # _switch_project auto-selects the first binder item; clear it so
+        # the panel is genuinely showing the project's own fields.
+        self.window.tree.setCurrentItem(None)
+        self.window.current_id = None
+        self.window._populate_metadata_table()
+
+        self.assertTrue(self.window.type_box.isHidden())
+        self.assertTrue(self.window.type_label.isHidden())
 
 
 if __name__ == "__main__":
