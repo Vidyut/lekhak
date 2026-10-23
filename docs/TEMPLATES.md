@@ -93,6 +93,15 @@ explicitly named `default` is the way to say it.
 5. the scope's default template (§1);
 6. baseline.
 
+**The document's own pick is the truth of that document.** If
+`doc_template` is set and the resolved set has that slot, the document
+renders with it — the book's template, the Type match and the title
+match all fall silent for that one document. Page geometry is
+deliberately outside it: paper, margins and trim live in the book's
+page setup (1.15), on a folder, never on a document — a chapter is not
+a book — so a document's layout pick changes how the unit looks without
+ever changing the paper it prints on.
+
 **Reserved names, and only names.** Three things are reserved: the folder name
 `Templates` (§1); the format tags `docx`, `pdf`, `epub`, `html` (with the
 aliases 2.1 already uses — `ebook`, `print`, `web`, `text`/`txt`/`plain`);

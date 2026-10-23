@@ -2241,7 +2241,10 @@ class MainWindow(QMainWindow):
             self._doc_template_changed)
         self.doc_template_box.setToolTip(
             "Which rendered layout this document pulls from its book's "
-            "template set — Automatic is the book's own choice.")
+            "template set — Automatic is the book's own choice. A pick "
+            "here is final: it is how THIS document renders, whatever "
+            "the book would have chosen. Page size is not part of it — "
+            "paper stays a book setting, on the folder.")
 
         # Type (docs/MODEL.md): the protected role, as an editable
         # dropdown — the novel-writing defaults, plus every Type this
