@@ -81,6 +81,21 @@ class MentionScanTests(unittest.TestCase):
         self.assertNotIn(prologue.id, self._mentions_of(prologue.id))
         self.assertNotIn(prologue.id, self._mentioned_by(prologue.id))
 
+    def test_two_documents_sharing_one_name_read_as_one(self):
+        """A chapter and a scene both called "Prologue" are one document
+        to the writer — listing them as each other's relations is the
+        self-match again. Case aside, too."""
+        chapter = self._chapter("Prologue", "Rain.")
+        scene = self._scene("Prologue", "Prologue began with rain.")
+        case_variant = self._scene("prologue", "More rain.")
+        self.assertNotIn(chapter.id, self._mentions_of(scene.id))
+        self.assertNotIn(scene.id, self._mentioned_by(chapter.id))
+        self.assertNotIn(case_variant.id, self._mentions_of(scene.id))
+        self.assertNotIn(scene.id, self._mentioned_by(case_variant.id))
+        # A differently named document still relates to the scene.
+        other = self._scene("Body", "Then Prologue ended.")
+        self.assertIn(chapter.id, self._mentions_of(other.id))
+
     def test_a_chapter_title_is_ignored_in_another_case(self):
         """The lowercase word in prose is not a reference to the chapter.
         Both directions: the chapter must not list the scene, and the

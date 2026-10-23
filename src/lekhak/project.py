@@ -1017,12 +1017,14 @@ class Project:
         Computed fresh from titles and prose on every call: nothing is
         stored, so a retitle or an edit heals itself and no relation can
         go stale. Whole-word phrase match (word-character boundaries,
-        case-insensitive) so "Rid" never matches inside "Ridnam". Two
+        case-insensitive) so "Rid" never matches inside "Ridnam". Three
         rules on top of that:
 
-        - **Never itself.** A document is not related to the same
-          document (docs/MODEL.md); a Prologue mentioning "Prologue" is
-          still just the Prologue.
+        - **Never itself, and never a duplicate name.** A document is not
+          related to the same document; and two documents sharing one
+          name — a chapter folder and its scene both called "Prologue" —
+          read as one document to the writer, so a title equal to this
+          one's (case aside) is skipped in both directions.
         - **A Chapter's title must match exactly, case included.** Chapter
           titles are often common words — the lowercase "prologue" in
           "the prologue of the letter" is not a reference to the chapter
@@ -1040,6 +1042,7 @@ class Project:
         texts = self._plain_texts()
         own_text = texts.get(document_id, "")
         own_title = target.title.strip()
+        own_key = own_title.casefold()
         own_exact = self.type_of(target) == "Chapter"
         mentions: list[Document] = []
         mentioned_by: list[Document] = []
@@ -1047,6 +1050,8 @@ class Project:
             if document.id == document_id:
                 continue
             title = document.title.strip()
+            if title and title.casefold() == own_key:
+                continue
             if title and self._mentions_phrase(own_text, title):
                 # An exact match is a subset of the loose one, so the
                 # strict re-check runs only on candidates that already
