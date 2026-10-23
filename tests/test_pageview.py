@@ -231,7 +231,7 @@ class PageTabTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_page_tab_sits_second_and_refreshes_on_show(self):
-        self.assertEqual(self.window.views.tabText(1), "Page")
+        self.assertEqual(self.window.views.tabText(1), "Page preview")
         self.window._select_document(self.scene.id)
         self.window.views.setCurrentWidget(self.window.page_view)
         self.assertGreater(self.window.page_view.page_count, 1)

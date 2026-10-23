@@ -2131,10 +2131,12 @@ class MainWindow(QMainWindow):
         self.views.addTab(self.outliner, "Outliner")
         # Page view (3.2): the projection canvas, second tab — it sits
         # next to the editor because it is the same document seen as
-        # printed paper.
+        # printed paper. The label says "preview" because the author of
+        # the software had to ask what differed from the editor tab
+        # (docs/UI-NOTES.md 6).
         self.page_view = PageView()
         self.page_view.jump_requested.connect(self._page_jump)
-        self.views.insertTab(1, self.page_view, "Page")
+        self.views.insertTab(1, self.page_view, "Page preview")
         self.views.currentChanged.connect(lambda _index: self._refresh_corkboard())
         self.views.currentChanged.connect(
             lambda index: self._refresh_outliner() if self.views.widget(index) is self.outliner else None)
@@ -2187,12 +2189,25 @@ class MainWindow(QMainWindow):
         self.book_template_box = QComboBox()
         self.book_template_box.currentIndexChanged.connect(
             self._book_settings_changed)
+        # From the consequence to the setting (docs/UI-NOTES.md 6): the
+        # row shows a name, so hovering it must say where the name comes
+        # from and where it is changed.
+        self.book_template_box.setToolTip(
+            "Which template set supplies this book's chapters — "
+            "Automatic follows the project default. Edit the slots "
+            "under Document → Edit Template Set….")
         self.cover_label = QLabel("Cover")
         self.book_cover_edit = QLineEdit()
         self.book_cover_edit.setPlaceholderText("Auto (images/…/cover.*)")
         self.book_cover_edit.editingFinished.connect(self._book_settings_changed)
         self.book_cover_button = QPushButton("Browse…")
         self.book_cover_button.clicked.connect(self._browse_cover)
+        cover_help = (
+            "The cover image this book's exports use when a format "
+            "wants one. It lives on the book folder, so it travels "
+            "with the manuscript; empty means auto-detect under images/.")
+        self.book_cover_edit.setToolTip(cover_help)
+        self.book_cover_button.setToolTip(cover_help)
         cover_row = QHBoxLayout()
         cover_row.addWidget(self.book_cover_edit)
         cover_row.addWidget(self.book_cover_button)
@@ -2206,10 +2221,19 @@ class MainWindow(QMainWindow):
         # shows the current trim/margins, clicking opens the dialog.
         self.page_setup_button = QPushButton("Page setup")
         self.page_setup_button.clicked.connect(self._open_page_setup)
+        self.page_setup_button.setToolTip(
+            "The paper, trim and margins this book prints with — set "
+            "it on the book folder: the nearest book folder wins for "
+            "everything inside it, and a series folder can set one "
+            "house trim for all its books. Clearing the dialog returns "
+            "to the built-in default (US Letter).")
         self.doc_template_label = QLabel("Document template")
         self.doc_template_box = QComboBox()
         self.doc_template_box.currentIndexChanged.connect(
             self._doc_template_changed)
+        self.doc_template_box.setToolTip(
+            "Which rendered layout this document pulls from its book's "
+            "template set — Automatic is the book's own choice.")
 
         # Metadata (1.12): the same Field/Type/Options/Value rows the Edit
         # Metadata dialog edits, inline and live — project-level fields on
@@ -3475,9 +3499,14 @@ class MainWindow(QMainWindow):
             anchor,
         )
         count = self.page_view.page_count
+        # Name the fallback as a fallback (docs/UI-NOTES.md 6): an
+        # unconfigured preview is undecided, not a choice the writer
+        # made — and the lever lives on the book folder.
+        paper = (self._trim_label(geometry) if geometry else
+                 "US Letter (default — set Page setup on the book folder)")
         self.statusBar().showMessage(
             f"Page view — {count} page{'' if count == 1 else 's'}, "
-            f"{self._trim_label(geometry)}")
+            f"{paper}")
 
     def _page_jump(self, position: int) -> None:
         """Dblclick on the paper: show the editor at the same
