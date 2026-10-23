@@ -68,7 +68,14 @@ BACKUP_STAMP_RE = re.compile(r"\d{8}-\d{6}-\d{6}")
 # Kinds are labels, not structure: any item may contain any other, at any
 # depth, and several items may share the top level. Folder is a neutral
 # container; chapter/scene/note are the writer's shorthand for intended use.
+# The physical structure is folders and files; the semantic role lives in
+# the protected Type metadata (docs/MODEL.md) and type_of() derives it.
 DOCUMENT_KINDS = {"folder", "chapter", "scene", "note"}
+# The Type each physical kind reads as with nothing stored
+# (docs/MODEL.md): the row is always visible in the inspector, but the
+# default stays out of storage so later heals are never shadowed.
+KIND_DEFAULT_TYPE = {"folder": "Folder", "chapter": "Chapter",
+                     "scene": "Scene", "note": "Note"}
 # How a document may demand to start on a page (1.6). "right" is recto
 # and "next-odd" the literal parity phrasing — both emit the same DOCX
 # ODD_PAGE section, as the user chose; likewise left/next-even.
@@ -532,6 +539,10 @@ class Project:
         except BaseException:
             self.content_path(document_id).unlink(missing_ok=True)
             raise
+        # No Type written here: derived defaults stay out of storage so a
+        # later heal (book settings promoting a folder) is never shadowed
+        # by a stale seed. The Type row shows type_of() either way, and
+        # an explicit choice is stored by the inspector (docs/MODEL.md).
         return Document(document_id, parent_id, title, "", position, 0, kind, 0)
 
     def find_child_folder(self, title: str, parent_id: str | None = None) -> Document | None:
@@ -1196,10 +1207,47 @@ class Project:
         ).fetchall()
         return {row[0]: row[1] for row in rows}
 
+    def default_type(self, document: Document) -> str:
+        """The Type a document shows with nothing stored (docs/MODEL.md).
+
+        Folders with book settings or page setup read as Book; anything
+        else as what it physically is. type_of() is this, unless stored
+        Type metadata says otherwise.
+        """
+        if document.kind == "folder":
+            if self.book_settings(document.id) or self.page_setup(document.id):
+                return "Book"
+            return "Folder"
+        return KIND_DEFAULT_TYPE.get(document.kind, "Document")
+
+    def type_of(self, document: Document) -> str:
+        """The protected Type role of a document (docs/MODEL.md).
+
+        Stored Type metadata wins; otherwise the derived default, which is
+        also the whole migration for pre-Type projects: a folder with book
+        settings or page setup reads as Book, everything else as what it
+        physically is. Templates and the UI ask here, never the raw kind.
+        """
+        stored = self.metadata(document.id).get("Type", "").strip()
+        return stored or self.default_type(document)
+
     def metadata_keys(self) -> list[str]:
         """Every metadata key used anywhere in the project, sorted."""
         rows = self.db.execute(
             "SELECT DISTINCT key FROM document_metadata ORDER BY key"
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def type_values(self) -> list[str]:
+        """Every distinct Type value used in the project, sorted.
+
+        The inspector's Type dropdown seeds itself from these, so a
+        value typed once — typo included — is selectable next time
+        rather than re-typed (docs/MODEL.md).
+        """
+        rows = self.db.execute(
+            "SELECT DISTINCT value FROM document_metadata "
+            "WHERE key='Type' AND TRIM(value) != '' ORDER BY value"
         ).fetchall()
         return [row[0] for row in rows]
 

@@ -105,6 +105,13 @@ what to do."* Four small fixes:
 
 ## 7. One paper size per book — enforce it
 
+**Superseded in shape by the model** (`docs/MODEL.md`): books are folders
+whose Type is `Book`, page setup hangs off those, and `type_of()` heals
+existing book folders into visibility. What survives: the engine refusal
+(`set_page_setup` on a non-folder), the inspector showing the resolved value
+read-only on chapters/scenes with its owner named, and the mixed-trim export
+decision (honour each book's stamp, warn when trims differ).
+
 A book with some pages 5 × 7 and some 6 × 9 is not a book. Page setup should
 therefore be settable **only on a folder**, never on a chapter or a scene:
 
@@ -135,3 +142,23 @@ keeps working on the template spec and the print interior.
 Nothing here changes behaviour, which is exactly why it deserves a proper
 pass instead of a one-dialog patch — it is the screen a writer visits when the
 software has already confused them.
+
+## 8. Metadata panel reformatted; Type is the role row — DONE
+
+The structural model is written up in `docs/MODEL.md`: folders and files,
+roles assigned by the protected `Type` metadata, no publish flag (exclusion
+is Type + a blank template, or the export scope). The inspector's metadata
+section now reads like Preferences did after its rebuild:
+
+- a **Type** row on top — editable dropdown (novel-writing defaults plus
+  every Type the project already uses; typed values join the list), always
+  populated from `type_of()`, editing the document's own metadata even on
+  folders where the table below shows project fields;
+- idiot-proofing: exact match snaps to the existing option; a case-only
+  variant warns ("looks like the existing type…") with a *Keep it as a
+  separate type* checkbox, snapping until ticked;
+- the table below is **Custom fields**, its third column renamed
+  **Format** (was "Type" — the collision with the metadata key);
+- the Edit Metadata dialog hides the Type row and preserves the stored
+  value; the outliner Kind column, binder tooltips, Quick Open and the
+  related-files list show `type_of`, never the raw physical kind.
