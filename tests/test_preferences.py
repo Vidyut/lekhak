@@ -16,7 +16,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSettings, Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QLabel  # noqa: E402
 
 from lekhak import ai  # noqa: E402
 from lekhak.app import MainWindow, PreferencesDialog, load_paste_prefs  # noqa: E402
@@ -78,6 +78,15 @@ class CategoryListTests(unittest.TestCase):
         self.dialog.size_slider.setValue(18)
         self.assertEqual(self.dialog.size_label.text(), "18 pt")
         self.assertEqual(self.dialog.size_sample.font().pointSize(), 18)
+        # The scope line moved into the text that actually grows, so the
+        # reader sees the difference the slider makes and what it is
+        # (and isn't) changing — and the old static note stays gone.
+        self.assertIn("only your view of the software",
+                      self.dialog.size_sample.text())
+        labels = [label.text()
+                  for label in self.dialog.findChildren(QLabel)]
+        self.assertFalse(any("travels with a book" in text
+                             for text in labels))
 
 
 class PreferencesApplyTests(unittest.TestCase):
@@ -92,9 +101,14 @@ class PreferencesApplyTests(unittest.TestCase):
     def tearDown(self):
         self.window.project = None
         self.window.deleteLater()
-        # The link default is global; leave it as found for later suites.
+        # The link default and the proofreading prompt are global; leave
+        # them as found for later suites. The prompt one is load-bearing:
+        # the fallback test's last act is setting ai/prompt, and without
+        # this removal it shadows the shipped prompt for every file that
+        # runs afterwards.
         QSettings().remove("link_policy/default")
         QSettings().remove("related/enabled")
+        QSettings().remove("ai/prompt")
 
     def test_the_categories_persist_where_they_claim_to(self):
         QSettings().setValue("editor/autosaveMs", 1500)

@@ -98,7 +98,11 @@ class PreferencesDialog(QDialog):
         self.size_slider.setRange(8, 24)
         self.size_slider.setValue(font_size)
         self.size_label = QLabel(f"{font_size} pt")
-        self.size_sample = QLabel("The quick brown fox — menus, binder, corkboard")
+        self.size_sample = QLabel(
+            "The quick brown fox — menus, binder, corkboard.\n"
+            "This doesn't alter the font in your document, only your "
+            "view of the software.")
+        self.size_sample.setWordWrap(True)
         self.size_slider.valueChanged.connect(self._update_size_sample)
         self._update_size_sample(font_size)
         appearance = self._page("Appearance")
@@ -117,9 +121,6 @@ class PreferencesDialog(QDialog):
         slider_row.addWidget(self.size_label)
         appearance_layout.addLayout(slider_row)
         appearance_layout.addWidget(self.size_sample)
-        note = QLabel("This installation's setting; nothing here travels with a book.")
-        note.setWordWrap(True)
-        appearance_layout.addWidget(note)
         appearance_layout.addStretch()
         self._add_category("Appearance", appearance)
 
