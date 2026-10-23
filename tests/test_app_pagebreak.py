@@ -1,4 +1,11 @@
-"""1.6 page starts: the inspector's Page start combo — offscreen.
+"""The Page start row is gone from the inspector — UI-NOTES 9.
+
+The template owns page starts per kind (docs/TEMPLATES.md §2) and the
+export's auto baseline — chapters open recto once a print trim is set —
+needs no control of its own. What this file guards: the row does not
+come back as a second place to say it, and a value stored by an older
+project still loads and saves without the inspector reading or
+clobbering it.
 
 Same test contract as the other GUI suites: QSettings redirected into a
 temp dir, windows never closed().
@@ -12,7 +19,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSettings  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 from lekhak.app import MainWindow  # noqa: E402
 from lekhak.project import Project  # noqa: E402
@@ -25,7 +32,7 @@ _settings_dir = tempfile.mkdtemp(prefix="lekhak-pagebreak-settings-")
 QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, _settings_dir)
 
 
-class PageStartTests(unittest.TestCase):
+class PageStartGoneTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.project = Project.create(Path(self.temporary.name) / "Novel", "Novel")
@@ -41,33 +48,20 @@ class PageStartTests(unittest.TestCase):
         self.project.close()
         self.temporary.cleanup()
 
-    def test_combo_lists_every_value_in_roadmap_order(self):
-        values = [self.window.page_break_box.itemData(index)
-                  for index in range(self.window.page_break_box.count())]
-        self.assertEqual(values, ["auto", "flow", "page", "left", "right",
-                                  "next-odd", "next-even"])
+    def test_the_inspector_has_no_page_start_row(self):
+        self.assertFalse(hasattr(self.window, "page_break_box"))
+        labels = [label.text() for label in self.window.findChildren(QLabel)]
+        self.assertNotIn("Page start", labels)
 
-    def test_selection_loads_the_document_value(self):
+    def test_a_stored_page_break_survives_selection_and_save(self):
+        """Export still honours old values; the inspector must neither
+        read them nor write them away."""
         self.project.update_document(self.scene.id, page_break="right")
         self.window._select_document(self.scene.id)
-
-        self.assertEqual(self.window.page_break_box.currentData(), "right")
-
-    def test_changing_the_combo_saves_with_the_document(self):
-        self.window._select_document(self.scene.id)
-        index = self.window.page_break_box.findData("left")
-
-        self.window.page_break_box.setCurrentIndex(index)
         self.window.save_current()
 
         found = next(d for d in self.project.documents() if d.id == self.scene.id)
-        self.assertEqual(found.page_break, "left")
-
-    def test_combo_disabled_without_a_project(self):
-        window = MainWindow()
-
-        self.assertFalse(window.page_break_box.isEnabled())
-        window.project = None
+        self.assertEqual(found.page_break, "right")
 
 
 if __name__ == "__main__":

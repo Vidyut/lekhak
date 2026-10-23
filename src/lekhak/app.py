@@ -2178,20 +2178,11 @@ class MainWindow(QMainWindow):
         )
         self.target.valueChanged.connect(self._metadata_changed)
 
-        # Page start (1.6): which side of the spread this document must
-        # open on in DOCX; "auto" flows on. Saved with the document.
-        self.page_break_box = QComboBox()
-        for label, value in (
-            ("Automatic (new page)", "auto"),
-            ("Continuous flow", "flow"),
-            ("New page", "page"),
-            ("Left page (verso)", "left"),
-            ("Right page (recto)", "right"),
-            ("Next odd page", "next-odd"),
-            ("Next even page", "next-even"),
-        ):
-            self.page_break_box.addItem(label, value)
-        self.page_break_box.currentIndexChanged.connect(self._metadata_changed)
+        # Page starts left the inspector (UI-NOTES 9): the template owns
+        # them per kind (docs/TEMPLATES.md §2) and the auto baseline —
+        # chapters open recto once a trim is set — needs no row. Stored
+        # values from older projects keep working silently; the export
+        # path still reads them.
 
         # Book anatomy (2.1): folders carry the compile settings (which
         # template dresses them, where the cover is) and the flag that
@@ -2302,8 +2293,6 @@ class MainWindow(QMainWindow):
         inspector_layout.addWidget(self.synopsis)
         inspector_layout.addWidget(QLabel("Word count goal"))
         inspector_layout.addWidget(self.target)
-        inspector_layout.addWidget(QLabel("Page start"))
-        inspector_layout.addWidget(self.page_break_box)
         inspector_layout.addWidget(self.templates_root_label)
         inspector_layout.addWidget(self.templates_root_box)
         inspector_layout.addWidget(self.book_template_label)
@@ -2585,7 +2574,6 @@ class MainWindow(QMainWindow):
         self.page_view.setEnabled(enabled)
         self.corkboard.setEnabled(enabled)
         self.synopsis.setEnabled(enabled)
-        self.page_break_box.setEnabled(enabled)
         self.templates_root_box.setEnabled(enabled)
         self.book_template_box.setEnabled(enabled)
         self.book_cover_edit.setEnabled(enabled)
@@ -3262,11 +3250,6 @@ class MainWindow(QMainWindow):
             self._resolve_wiki_links()
             self.synopsis.setPlainText(document.synopsis)
             self.target.setValue(document.word_target)
-            # Junk stored by a hand-edited file shows as Automatic; the
-            # next save heals it.
-            self.page_break_box.setCurrentIndex(
-                max(0, self.page_break_box.findData(document.page_break))
-            )
             self._refresh_book_widgets(document)
             if document.kind == "folder":
                 # A container is not prose (docs/UI-NOTES.md 3): leaving the
@@ -3282,7 +3265,6 @@ class MainWindow(QMainWindow):
             self.editor.begin_document(self.project, None)
             self.synopsis.clear()
             self.target.setValue(0)
-            self.page_break_box.setCurrentIndex(0)
             self._refresh_book_widgets(None)
         self._populate_metadata_table()
         self._refresh_related()
@@ -4105,7 +4087,6 @@ class MainWindow(QMainWindow):
                 self.current_id,
                 synopsis=self.synopsis.toPlainText(),
                 word_target=self.target.value(),
-                page_break=self.page_break_box.currentData(),
             )
             # 1.9 session resume: written on every save path (debounce,
             # document switch, close) so a crash still resumes — the

@@ -162,3 +162,19 @@ section now reads like Preferences did after its rebuild:
 - the Edit Metadata dialog hides the Type row and preserves the stored
   value; the outliner Kind column, binder tooltips, Quick Open and the
   related-files list show `type_of`, never the raw physical kind.
+
+## 9. Page start leaves the inspector — DONE
+
+The Page start combo is gone from the inspector: the template owns page
+starts per kind (`New Chapter: Recto` in the template config,
+`docs/TEMPLATES.md` §2) and the writer picks the template, so a
+document-level control would only fight it. What stays:
+
+- the export's auto baseline is untouched — chapters open recto once a
+  print trim is set, every other document starts its own page;
+- values stored by older projects are still honoured by export,
+  silently: nothing in the inspector reads or writes them anymore.
+
+When the template's per-kind page starts land (engine side), they take
+over the baseline as well. The Document template row is unrelated — it
+picks a rendering slot, not a page start.
