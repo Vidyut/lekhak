@@ -215,3 +215,69 @@ differently from the way Lekhak does.
 4. Trash, the areas, and the per-level lift.
 5. Extract, nest and absorb — which by then is "copy a folder, open it".
 6. The example/documentation project, authored as markdown in the repo.
+
+---
+
+## Built overnight (2026-10-25, unattended shift)
+
+Verified: `641 tests, exit 0`. Nothing in the running application changed —
+this is all groundwork, deliberately beside the database.
+
+- **`docs/STORAGE.md`** (this file) — the decided model, plus the `ROADMAP.md`
+  amendment the format-contract clause required.
+- **`scripts/storage_layout_dryrun.py`** — read-only: prints the tree a
+  migration would write, from an existing project's database. Run against the
+  author's real project it reports **55 folders, 283 documents, 46 of them
+  carrying their own prose as `index.html`, 282 names normalised by the
+  no-spaces rule, 8 collisions needing a suffix, 0 problems.**
+- **`src/lekhak/layout.py`** and **`tests/test_layout.py`** (20 tests) — the
+  core: name rules, the YAML-subset frontmatter and manifests, `write_tree`
+  and `load_tree`, and the order guarantees below.
+
+### Assumptions made, for the author to confirm or overturn
+
+1. **A folder's manifest stores its `title`.** Found while building: a
+   directory name is only a slug, so the real title has nowhere else to live.
+   `.lekhak/folder.yaml` therefore holds `id`, `title`, `type` and `children`.
+2. **Combining marks survive in filenames.** A mark is not a space: `अंत`
+   stays `अंत` and `café` stays `café` rather than being hyphenated mid-word.
+3. **Numeric-looking values are not quoted**, so `Count: 3` reads back as the
+   number 3; a writer who wants the text `"3"` quotes it. (YAML's own habit.)
+4. **`index.html` is not a child.** It is the container's own prose, so the
+   scan skips it when listing children — otherwise a chapter's text appeared
+   as one of its scenes.
+5. **Files added from outside append**, in name order after the manifest's
+   children, rather than being inserted somewhere clever. The manifest is the
+   order; new things go last.
+6. **The dry-run script still carries its own copy of the slug function**
+   rather than importing `lekhak.layout.slug` — a tidy-up for the next pass,
+   now that there is one place for it.
+
+### What the order guarantees actually are
+
+- `write_tree` writes each folder's children **in the order given**, and
+  records exactly those names in the manifest.
+- `load_tree` reads the manifest first and consults the directory only for
+  names it does not already know.
+- Tests pin both: titles that would sort `1, 10, 2` stay in binder order, and
+  one test **edits a manifest by hand and watches the tree follow it** — the
+  proof that filenames are never consulted for order.
+- A document renamed by hand keeps its identity, because the `id` lives in the
+  frontmatter.
+
+### Next, in order
+
+1. An adapter on `Project`: build `Node`s from the database, and read a tree
+   back into the model — this is what lets the *live* app be pointed at either
+   layout.
+2. The migration writer: `write_tree` from the real database, then read it
+   back and compare every document before the flat pool is retired.
+3. Writer operations in the new model: create, rename, move, reorder, delete —
+   atomic renames wherever the filesystem allows.
+4. Trash and the areas; extract and nest; then the example project.
+
+Also worth deciding when convenient: the author's project contains **two pairs
+of same-titled documents** (`SYMBTech Building, Dome 91-110` twice, several
+`Untitled`), which the suffix rule will number automatically. Since the
+working agreements say nothing is resolved by name alone, the migrated binder
+should probably *show* those duplicates rather than quietly numbering them.
