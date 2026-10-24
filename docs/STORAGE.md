@@ -92,6 +92,14 @@ folder must be a valid project on its own.
 Order is a list of **names**, not numeric prefixes: reordering rewrites one
 small file instead of renaming every document.
 
+**Order is never derived from filenames, and nothing sorts children by name.**
+The manifest *is* the order: the migration writes it from the database's
+sibling order, and every reorder rewrites it. Sorting by name would scramble
+real binders — the author's scene titles run `1---`, `2---`, … `10---`, which
+as text sort `1, 10, 2` — and a filesystem's own enumeration order is
+arbitrary on top of that. New documents append; the writer drags to reorder;
+the numbers in a title stay decoration, never mechanism.
+
 ## Stored versus indexed
 
 | Stored (the truth) | Indexed (rebuildable) |

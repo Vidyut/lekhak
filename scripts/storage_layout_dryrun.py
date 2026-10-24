@@ -101,9 +101,18 @@ def main() -> int:
             prose_cache[document_id] = bool(stripped.strip())
         return prose_cache[document_id]
 
+    manifests: list[tuple[str, list[str]]] = []
+
     def walk(parent_id: str | None, path: str) -> None:
-        """Depth-first, assigning a filename per child in its own folder."""
+        """Depth-first, assigning a filename per child in its own folder.
+
+        Children are visited in the database's own sibling order — the order
+        the writer sees in the binder — and the manifest records exactly that,
+        because filenames must never be the source of order
+        (docs/STORAGE.md).
+        """
         nonlocal files, folders, indexes
+        made: list[str] = []
         taken: dict[str, str] = {}
         for row in sorted(children.get(parent_id, []),
                           key=lambda item: item["position"]):
@@ -128,6 +137,7 @@ def main() -> int:
                 renamed.append((f"{path}/{candidate}", row["title"]))
             if not row["title"].strip():
                 problems.append(f"empty title at {path} ({row['id'][:8]})")
+            made.append(candidate + ("/" if is_container else ""))
             here = f"{path}/{candidate}"
             if is_container:
                 folders += 1
@@ -140,6 +150,8 @@ def main() -> int:
                 files += 1
                 print(f"{here}   [{row['kind']}]  {row['title']!r}")
             walk(row["id"], here)
+        if made:
+            manifests.append((path or "/", made))
 
     print(f"project: {project}")
     print(f"documents: {len(rows)}\n")
@@ -159,6 +171,19 @@ def main() -> int:
     print(f"problems: {len(problems)}")
     for item in problems[:10]:
         print(f"  {item}")
+    print()
+    print("=== would-be folder.yaml, shallowest folders (order straight from the database)")
+    shown = 0
+    for path, names in manifests:
+        if shown >= 4 or path.count("/") > 2:
+            continue
+        print(f"{path}/.lekhak/folder.yaml")
+        for name in names[:8]:
+            print(f"  - {name}")
+        if len(names) > 8:
+            print(f"  … and {len(names) - 8} more, still in order")
+        print()
+        shown += 1
     return 0
 
 
