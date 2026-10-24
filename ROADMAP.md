@@ -1040,9 +1040,12 @@ is a decision for when this gets scheduled.
 
 ## Working agreements
 
-- The project format stays transparent: documents are plain HTML files,
-  metadata is SQLite, backups are copies. No change to that contract without
-  an explicit decision recorded here.
+- The project format stays transparent: **the filesystem is the structure** —
+  documents are HTML files carrying YAML frontmatter, folders are directories
+  with a hidden `.lekhak/folder.yaml`, and SQLite is a rebuildable cache — all
+  per `docs/STORAGE.md`, decided 2026-10-25, which supersedes the earlier
+  "metadata is SQLite" clause. Backups are copies. No further change to this
+  contract without an explicit decision recorded here.
 - Content writes stay atomic (`os.replace` after fsync). Any new writer
   follows the same rule.
 - Codex may pick up any item directly; claim it in a commit message
