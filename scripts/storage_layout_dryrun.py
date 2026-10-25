@@ -19,6 +19,8 @@ import unicodedata
 from collections import defaultdict
 from pathlib import Path
 
+from lekhak.layout import has_prose as _has_prose
+
 # Characters no target filesystem will take, plus the ones Windows reserves.
 ILLEGAL = set('<>:"/\\|?*') | {chr(code) for code in range(32)}
 # Reserved device names on Windows; a file called NUL.txt is a headache.
@@ -86,19 +88,17 @@ def main() -> int:
     content_dir = project / "documents"
     prose_cache: dict[str, bool] = {}
 
-    def has_prose(document_id: str) -> bool:
+    def has_prose(document_id: str, title: str = "") -> bool:
         """Does this row carry words of its own, not just children?
 
-        A container that does gets an ``index.html`` (docs/STORAGE.md): a
-        filesystem item cannot be a file and a directory at once, and this
-        project's chapters hold both prose and scenes.
+        Delegates to the real rule so the report and the migration can never
+        disagree (docs/STORAGE.md): Qt's stylesheet text and a title typed as
+        a heading are not prose.
         """
         if document_id not in prose_cache:
             path = content_dir / f"{document_id}.html"
             text = path.read_text(encoding="utf-8") if path.exists() else ""
-            stripped = re.sub(r"<[^>]+>", " ", text)
-            stripped = re.sub(r"&[a-zA-Z#0-9]+;", " ", stripped)
-            prose_cache[document_id] = bool(stripped.strip())
+            prose_cache[document_id] = _has_prose(text, title)
         return prose_cache[document_id]
 
     manifests: list[tuple[str, list[str]]] = []
@@ -142,7 +142,7 @@ def main() -> int:
             if is_container:
                 folders += 1
                 note = ""
-                if has_prose(row["id"]):
+                if has_prose(row["id"], row["title"]):
                     indexes += 1
                     note = "  + index.html (its own prose)"
                 print(f"{here}/   [{row['kind']}]{note}  {row['title']!r}")

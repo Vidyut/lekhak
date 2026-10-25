@@ -53,7 +53,7 @@ class SlugTests(unittest.TestCase):
             name = layout.unique_name(layout.slug(title), taken)
             taken.add(name.casefold())
             names.append(name)
-        self.assertEqual(names, ["Book", "book-2", "BOOK-3"])
+        self.assertEqual(names, ["Book", "book-1", "BOOK-2"])
 
 
 class FrontmatterTests(unittest.TestCase):
@@ -97,6 +97,45 @@ class FrontmatterTests(unittest.TestCase):
         self.assertEqual(parsed["title"], "Hand written")
         self.assertEqual(parsed["metadata"], {"Status": "Final"})
         self.assertEqual(rest, "<p>body</p>")
+
+
+class ProseTests(unittest.TestCase):
+    """What counts as words of its own — the two false positives from the
+    author's real project, and the case that should still count."""
+
+    QT_EMPTY = ('<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0//EN">\n'
+                '<html><head><style type="text/css">\n'
+                'p, li { white-space: pre-wrap; }\n'
+                'hr { height: 1px; border-width: 0; }\n'
+                '</style></head><body style="font-size:12pt;">'
+                '<p style="-qt-paragraph-type:empty;"><br /></p></body></html>')
+
+    def test_an_empty_document_is_not_prose(self):
+        """Qt writes a whole file whose only text is its own stylesheet."""
+        self.assertFalse(layout.has_prose(self.QT_EMPTY, "Manuscript"))
+
+    def test_a_title_typed_as_a_heading_is_not_prose(self):
+        self.assertFalse(layout.has_prose("<p><b>How the Light Breaks</b></p>",
+                                          "How the Light Breaks"))
+
+    def test_a_numbered_title_matches_its_own_heading(self):
+        self.assertFalse(layout.has_prose("<p><b>\\1. Rebirth in Ruin</b></p>",
+                                          "1. Rebirth in Ruin"))
+
+    def test_real_words_are_prose(self):
+        self.assertTrue(layout.has_prose("<p>The monsoon came late.</p>",
+                                         "The monsoon"))
+        self.assertTrue(layout.has_prose(
+            "<p><b>Prologue</b></p><p>Then the rain came.</p>", "Prologue"))
+
+    def test_a_title_only_container_gets_no_index_html(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "P.lekhak"
+            node = Node(id="x", title="Prologue", kind="folder",
+                        content="<p><b>Prologue</b></p>",
+                        children=[Node(id="y", title="Scene", content="<p>t</p>")])
+            stats = layout.write_tree(root, [node])
+            self.assertEqual(stats["indexes"], 0)
 
 
 class TreeRoundTripTests(unittest.TestCase):
@@ -227,7 +266,7 @@ class TreeRoundTripTests(unittest.TestCase):
         names = sorted(entry.name for entry in
                        (self.root / "Chapter").iterdir()
                        if entry.suffix == ".html")
-        self.assertEqual(names, ["1-Zayn-leaves-2.html", "1-Zayn-leaves.html"])
+        self.assertEqual(names, ["1-Zayn-leaves-1.html", "1-Zayn-leaves.html"])
 
 
 if __name__ == "__main__":

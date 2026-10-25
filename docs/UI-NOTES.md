@@ -135,6 +135,29 @@ it is not expensive:
    carries a page size per section anyway. Then a two-book file is genuinely
    two books in one file, which is what the writer selected.
 
+## 8. Insertions: literals and placeholders are different things
+
+Two kinds of "insert date", and they must not be confused in the menus:
+
+- **A literal** — *Insert current date* / *Insert current time*: the text is
+  written into the document once, and it says what the date was when the
+  writer typed it. (Build-now 5 shipped this, and it feeds the `Date`
+  metadata.)
+- **A placeholder** — `${Date}`, `${Author}`, any resolved value: it stays
+  `${Date}` in the file and is replaced **at export**, so it says the date of
+  the export. Placeholders work anywhere in the project and are only ever
+  resolved on the way out (`docs/TEMPLATES.md` §3.1).
+
+The Format menu wants a small **Insert** dropdown holding both, side by side
+and clearly labelled — one row for the literals, one for the placeholder
+vocabulary — because the difference is invisible until the day it matters.
+
+**Engine gap to close first:** placeholders are substituted in *template
+slots* today; a `${Date}` written in **prose** is not. `_render_document`
+fills the slot and passes content through untouched. Until prose is filled at
+compile time, the placeholder half of this menu would insert text that never
+changes — so this is a prerequisite, not a nicety.
+
 **Assigned to the interface side** (`docs/WORK-SPLIT.md`): Preferences
 rebuild, the three items above it, and this rename, while the engine side
 keeps working on the template spec and the print interior.

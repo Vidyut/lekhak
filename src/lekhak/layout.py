@@ -16,6 +16,7 @@ multi-document streams or tags; no dependency (docs/STORAGE.md).
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,14 +69,52 @@ def slug(title: str) -> str:
 
 
 def unique_name(name: str, taken: set[str]) -> str:
-    """``Book``, then ``Book-2``, ``Book-3`` — compared case-insensitively,
-    because macOS and Windows filesystems are (docs/STORAGE.md)."""
+    """``Book``, then ``Book-1``, ``Book-2`` — compared case-insensitively,
+    because macOS and Windows filesystems are (docs/STORAGE.md).
+
+    Numbering is quiet and meant to stay invisible: a writer with chapters
+    named for their point of view (``MMC``, ``FMC``, ``MMC``…) never meets the
+    suffix, because the binder shows the *title* from the frontmatter and only
+    the file carries the number.
+    """
     if name.casefold() not in taken:
         return name
-    number = 2
+    number = 1
     while f"{name}-{number}".casefold() in taken:
         number += 1
     return f"{name}-{number}"
+
+
+STYLE_BLOCK_RE = re.compile(r"<style\b[^>]*>.*?</style>", re.I | re.S)
+MARKUP_RE = re.compile(r"<[^>]+>")
+ENTITY_RE = re.compile(r"&[a-zA-Z#0-9]+;")
+INVISIBLE_RE = re.compile(r"[\u200b-\u200f\ufeff]")
+
+
+def has_prose(html: str, title: str = "") -> bool:
+    """Does this document carry words of its own, beyond its own title?
+
+    Two false positives are common enough to matter, both found in the
+    author's real project:
+
+    - Qt writes an *empty* document as a full HTML file whose only text is its
+      own stylesheet (``p, li { white-space: pre-wrap; }``), which survives any
+      tag-stripping that leaves ``<style>`` alone;
+    - a container's content is often just its title, typed once as a heading
+      (``<p><b>How the Light Breaks</b></p>``).
+
+    Neither is prose. Strip style blocks, then markup, entities and
+    zero-width characters, and compare what is left — letters and digits only
+    — against the title the same way, so `1. Rebirth in Ruin` matches its own
+    heading whatever punctuation either side carries.
+    """
+    text = INVISIBLE_RE.sub("", ENTITY_RE.sub(" ", MARKUP_RE.sub(
+        " ", STYLE_BLOCK_RE.sub(" ", html or ""))))
+    text = re.sub(r"[^\w]+", "", text, flags=re.UNICODE).casefold()
+    if not text:
+        return False
+    heading = re.sub(r"[^\w]+", "", title or "", flags=re.UNICODE).casefold()
+    return text != heading
 
 
 # --- the documented YAML subset ----------------------------------------------
@@ -235,7 +274,7 @@ def _write_level(parent: Path, nodes: list[Node], stats: dict) -> list[str]:
             folder.mkdir(parents=True, exist_ok=True)
             stats["folders"] += 1
             child_names = _write_level(folder, node.children, stats)
-            if node.content.strip():
+            if has_prose(node.content, node.title):
                 (folder / INDEX_NAME).write_text(_document_text(node),
                                                  encoding="utf-8")
                 stats["indexes"] += 1
