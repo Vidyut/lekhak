@@ -2791,6 +2791,11 @@ class MainWindow(QMainWindow):
         QSettings().setValue("session/lastProject", str(project.root))
         self.setWindowTitle(f"{project.get_setting('title', project.root.stem)} — Lekhak")
         last_document = project.get_setting("last_document")
+        # A project always has a Templates area with at least one template in
+        # it (the author's rule), so nobody has to dig through code or the
+        # filesystem to find out what a template is. Runs once per project;
+        # the binder lifts it to the bottom and italicises it.
+        project.ensure_templates_area()
         # Session state (1.9): the zoom the last session ended on comes
         # back with the document and the caret, before anything loads.
         self._load_zoom()
@@ -3031,8 +3036,12 @@ class MainWindow(QMainWindow):
             roots = children.get(scope, [])
         for document in sorted(roots, key=lambda d: d.position):
             add_row(document)
-        for document in lifted_template_roots(documents, in_template):
-            add_row(document, None, template_side=True)
+        if selected is None:
+            # The lifted templates area belongs to the project's own level. A
+            # scoped outliner shows the folder the writer selected, not a
+            # top-level row dragged into it (docs/UI-NOTES.md 2).
+            for document in lifted_template_roots(documents, in_template):
+                add_row(document, None, template_side=True)
         for document in documents:
             if document.id in keep_selected and document.id in items:
                 items[document.id].setSelected(True)

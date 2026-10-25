@@ -1523,6 +1523,37 @@ class Project:
             current = parents.get(current)
         return None
 
+    def ensure_templates_area(self) -> str | None:
+        """Make sure the project has a Templates area holding a template.
+
+        The author's rule: the Templates folder should exist in every project
+        and always contain at least one template, so nobody has to dig through
+        code or the filesystem to find out what a template is. The area is a
+        top-level folder called ``Templates``, flagged as the templates root —
+        which is what makes the binder lift it to the bottom, italic, and keep
+        it out of exports and word counts.
+
+        It runs once: the setting is the guard, so a writer who deliberately
+        deletes the area does not have it grow back on every open. Returns the
+        new folder's id, or None when there was nothing to do.
+        """
+        if self.get_setting("templates_area_created") == "1":
+            return None
+        self.set_setting("templates_area_created", "1")
+        if self.templates_roots():
+            return None
+        try:
+            folder = self.add_document("Templates", None, "folder")
+            self.set_templates_root(folder.id, True)
+            from .templates import materialise_builtin_set
+
+            materialise_builtin_set(self.root)
+        except Exception:
+            # A template on disk is a convenience, never a gate: a project on a
+            # read-only filesystem still opens.
+            return None
+        return folder.id
+
     def templates_roots(self) -> list[Document]:
         """Folders flagged as the special TEMPLATES area (2.1), in binder
         order — normally exactly one."""

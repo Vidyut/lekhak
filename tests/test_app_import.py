@@ -183,8 +183,11 @@ class ImportMenuTests(unittest.TestCase):
             self.window.import_scrivener_dump()
 
         self.assertEqual(
+            # The Templates area is always there (it is not an import), so the
+            # question here is whether the *import* added a folder.
             [d for d in self.project.documents()
-             if d.kind == "folder" and d.title != "Draft"],
+             if d.kind == "folder" and d.title != "Draft"
+             and not d.is_templates_root],
             []
         )
 

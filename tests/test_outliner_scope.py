@@ -61,8 +61,10 @@ class OutlinerScopeTests(unittest.TestCase):
         self.assertEqual(self._titles(), ["Book", "Stray"])
 
     def test_nothing_selected_shows_the_project(self):
+        """The project's own level, with the templates area lifted below it
+        (it is a folder of the project, not of any book)."""
         self.window.current_id = None
-        self.assertEqual(self._titles(), ["Draft"])
+        self.assertEqual(self._titles(), ["Draft", "Templates"])
 
     def test_the_scope_follows_a_binder_click_without_a_tab_switch(self):
         # The gap the first pass missed: while the Outliner tab is already

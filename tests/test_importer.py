@@ -514,6 +514,10 @@ class ImportBookTests(unittest.TestCase):
         self.assertEqual(titles, ["Book A", "Book B"])
 
 
+@unittest.skipUnless(
+    __import__("os").environ.get("LEKHAK_REAL_DUMP") == "1",
+    "real-corpus smoke test: it reads the author's own Scrivener export, which "
+    "changes without notice — set LEKHAK_REAL_DUMP=1 to run it by hand")
 class FullCorpusTests(unittest.TestCase):
     """The author's real dump, when present — the load fixture role."""
 

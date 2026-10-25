@@ -309,6 +309,51 @@ def copy_template_set(source: TemplateSet, name: str, project_root: Path) -> Tem
     return created
 
 
+SET_README = """This folder is one template set: the instructions for turning your project
+into an exported book.
+
+Each file here is a "slot" — chapter.html says what a chapter looks like,
+scene.html what a scene looks like, title_page.html what the title page looks
+like. Edit them to change your export; delete a file to fall back to the
+built-in default for that slot.
+
+Placeholders you can use inside a slot — ${Title}, ${Content}, ${Author},
+${Date}, ${Metadata.AnyKey} — are filled in when you export.
+
+You may add your own files here. A file whose name matches a slot name
+(chapter, scene, title_page, toc_page, project_header, project_footer,
+chapter_end, first_scene, scene_end, scene_divider) is that slot; anything
+else is a document variant you can pick per document.
+
+The .txt files are the same slots for plain-text export. Edit either; they do
+not have to agree.
+
+Nothing here is precious: make a copy (Templates area → Duplicate) before
+changing anything you might want back.
+"""
+
+
+def materialise_builtin_set(project_root: Path, name: str = "Default") -> TemplateSet:
+    """Write the built-in defaults out as an editable set inside the project.
+
+    The defaults live in this module as strings, which suits the machine and is
+    invisible to the writer. Materialising them is what puts a template in
+    front of somebody: real files, in their project, beside their book — the
+    "always contains at least one template" the author asked for. Called from
+    Project.ensure_templates_area() and by the Templates area's copy action.
+    """
+    directory = project_template_root(project_root) / name
+    if directory.is_dir():
+        return TemplateSet.load(name, directory)
+    created = create_template_set(name, project_root)
+    documents = created.directory / "documents"
+    documents.mkdir(parents=True, exist_ok=True)
+    (documents / "bare.html").write_text(
+        BUILTIN_DOCUMENT_TEMPLATES["bare"][True], encoding="utf-8")
+    (created.directory / "README.txt").write_text(SET_README, encoding="utf-8")
+    return created
+
+
 def slot_file_path(directory: Path, name: str, *, document: bool,
                    html: bool) -> Path:
     """Where one slot of a set lives on disk (2.4): ``<set>/<slot>.html``
