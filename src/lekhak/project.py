@@ -606,6 +606,20 @@ class Snapshot:
     created_at: str
 
 
+class DeleteError(Exception):
+    """A file could not be removed, so nothing was deleted.
+
+    The failures are ``(path, reason)`` pairs: what would not go, and
+    why. The document is still in the binder — the writer decides what
+    to do about it.
+    """
+
+    def __init__(self, failures: list[tuple[Path, str]]):
+        self.failures = failures
+        super().__init__(
+            "; ".join(f"{path}: {reason}" for path, reason in failures))
+
+
 @dataclass(frozen=True)
 class Revision:
     """One pending tracked change (2.4).
@@ -1264,20 +1278,67 @@ class Project:
         return False
 
     def delete_document(self, document_id: str) -> None:
+        """Delete a document, its rows and its files, together.
+
+        The two go together or not at all. The rows are removed first —
+        a crash between the two leaves orphaned files on disk (harmless,
+        and the backup still has them) rather than a live row pointing at
+        a file that no longer exists. But if a file turns out to be
+        undeletable (a permission, a read-only mount, a lock), the rows
+        are put back and :class:`DeleteError` says so: the document stays
+        in the binder, and the writer is told why.
+        """
         descendants = self._descendant_ids(document_id)
-        # Rows are deleted before the content files, deliberately. A crash
-        # between the two leaves orphaned .html files on disk (harmless, and
-        # the backup still has them) rather than a live row pointing at a
-        # file that no longer exists — which would show as a document that
-        # opens blank and cannot be recovered from the project itself.
+        # The rows are remembered so they can be put back if a file
+        # refuses to go, and the places to clear are gathered before the
+        # rows go: once they are gone, the paths are gone with them.
+        rows: list[tuple] = []
+        places: list[Path] = []
+        for item_id in descendants:
+            row = self.db.execute(
+                "SELECT id,parent_id,title,synopsis,position,word_target,"
+                "kind,word_count,page_break,scene_divider,doc_template,path,"
+                "created_at,updated_at FROM documents WHERE id = ?",
+                (item_id,),
+            ).fetchone()
+            if row is None:
+                continue
+            rows.append(tuple(row))
+            if not row[11]:
+                continue
+            path = self.root / str(row[11])
+            # A container is a directory: the folder goes, and with it
+            # whatever it held (docs/STORAGE.md).
+            places.append(path)
         with self.db:
             self.db.execute("DELETE FROM documents WHERE id=?", (document_id,))
-        for item_id in descendants:
-            path = self.content_path(item_id)
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                path.unlink(missing_ok=True)
+        failures: list[tuple[Path, str]] = []
+        for path in places:
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                elif path.exists():
+                    path.unlink()
+            except OSError as error:
+                failures.append((path, str(error)))
+        if failures:
+            # Nothing is deleted after all: the rows go back, so the
+            # document is still there for the writer to deal with.
+            self._restore_rows(rows)
+            raise DeleteError(failures)
+        self.write_order_files()
+
+    def _restore_rows(self, rows: list[tuple]) -> None:
+        """Put deleted rows back exactly as they were."""
+        with self.db:
+            for row in rows:
+                self.db.execute(
+                    "INSERT OR REPLACE INTO documents(id,parent_id,title,"
+                    "synopsis,position,word_target,kind,word_count,"
+                    "page_break,scene_divider,doc_template,path,"
+                    "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    row,
+                )
 
     def write_order_files(self) -> None:
         """Write every folder's ``.order.json`` from the binder order.

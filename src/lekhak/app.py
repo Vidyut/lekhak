@@ -85,8 +85,9 @@ from .importer import (
 from .ywriter import import_yw7
 from .scrivener import import_scriv
 from .project import (
-    AMAZON_TRIMS, DEFAULT_PAGE_SETUP, EXPORT_KINDS, KDP_MARGIN_BANDS,
-    KDP_MARGIN_MIN, PAGE_BREAK_VALUES, PAGE_TRIMS, Project, clean_page_setup,
+    AMAZON_TRIMS, DEFAULT_PAGE_SETUP, EXPORT_KINDS,
+    KDP_MARGIN_BANDS, KDP_MARGIN_MIN, PAGE_BREAK_VALUES,
+    PAGE_TRIMS, DeleteError, Project, clean_page_setup,
     config_length_list, config_page_size, trim_id_for,
 )
 from .preferences import LINK_POLICY_CHOICES, PreferencesDialog
@@ -4631,41 +4632,12 @@ class MainWindow(QMainWindow):
         return answer == QMessageBox.Yes
 
     def delete_section(self) -> None:
-        if not self.project or not self.current_id:
-            return
-        documents = self.project.documents()
-        document = next((d for d in documents if d.id == self.current_id), None)
-        if document is None:
-            return
-        parents = {d.id: d.parent_id for d in documents}
+        """Delete the selected document.
 
-        def beneath(candidate_id: str) -> bool:
-            current = parents.get(candidate_id)
-            while current is not None:
-                if current == document.id:
-                    return True
-                current = parents.get(current)
-            return False
-
-        children = [d for d in documents if beneath(d.id)]
-        words = document.word_count + sum(d.word_count for d in children)
-        detail = "\n".join(f"{d.kind}: {d.title}" for d in children[:50])
-        if len(children) > 50:
-            detail += f"\n… and {len(children) - 50} more"
-        if not confirm_destructive(
-            self, "Delete section",
-            f"Delete ‘{document.title}’"
-            + (f" and the {len(children)} item(s) inside it?" if children else "?"),
-            confirm="Delete",
-            checkbox=(f"{self._binder_path(document.id)}\n\n{words:,} words in "
-                      "all. The last backup still holds a copy; this project "
-                      "will not."),
-            detail=detail,
-        ):
-            return
-        self.project.delete_document(self.current_id)
-        self.current_id = None
-        self._reload_tree()
+        The same path as the binder's Delete, so the confirmation and
+        what it removes are the same wherever the writer asks from.
+        """
+        self.delete_selected()
 
     def search(self) -> None:
         if not self.project:
@@ -5668,8 +5640,10 @@ class MainWindow(QMainWindow):
     def delete_selected(self) -> None:
         """Delete the selected document — its row, and its place on disk.
 
-        A container goes with everything under it, so the question names
-        what will go, not just what was clicked.
+        The confirmation names what is about to be lost and where it
+        lives, and the writer has to say they understand it before the
+        button unarms (ROADMAP working agreements). A container goes with
+        everything under it, and their files go with them.
         """
         if not self.project or not self.current_id:
             return
@@ -5678,16 +5652,56 @@ class MainWindow(QMainWindow):
         if document is None:
             return
         descendants = self.project._descendant_ids(document.id)
-        if len(descendants) > 1:
-            question = (f"Delete {document.title} and everything inside it? "
-                        "This cannot be undone.")
+        inside = len(descendants) - 1
+        if inside:
+            question = (f"Delete ‘{document.title}’ and the {inside} "
+                        "item(s) inside it?")
         else:
-            question = f"Delete {document.title}? This cannot be undone."
-        answer = QMessageBox.question(
-            self, "Delete", question, QMessageBox.Yes | QMessageBox.No)
-        if answer != QMessageBox.Yes:
+            question = f"Delete ‘{document.title}’?"
+        words = sum(
+            d.word_count for d in self.project.documents()
+            if d.id in descendants)
+        where = document.path or "(not on disk)"
+        detail = "\n".join(
+            f"{d.kind}: {d.title}"
+            for d in self.project.documents() if d.id in descendants)
+        if not confirm_destructive(
+            self, "Delete",
+            question,
+            confirm="Delete",
+            checkbox=(f"{where}\n\nThe file{'' if inside == 0 else 's'} will "
+                      "be removed from disk as well as from Lekhak. "
+                      f"{words:,} words. The last backup still holds a "
+                      "copy; this project will not."),
+            detail=detail,
+        ):
             return
-        self.project.delete_document(document.id)
+        try:
+            self.project.delete_document(document.id)
+        except DeleteError as error:
+            # Nothing was deleted: the document is still here, and the
+            # writer is told what stopped it and what they can do.
+            reasons = "\n".join(f"{path}\n    {reason}"
+                                 for path, reason in error.failures)
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("Could not delete")
+            box.setText(f"‘{document.title}’ was not deleted.")
+            box.setInformativeText(
+                "Lekhak could not remove the file from disk, so nothing was "
+                "deleted — the document is still in your binder, exactly as "
+                "it was.\n\n"
+                "This is usually a permission, a read-only folder, or a file "
+                "another program is holding open. You can delete it by hand "
+                "in your file manager, or change the permissions and try "
+                "again.\n\n"
+                "If you think this is a bug, please report it:\n"
+                "https://github.com/Vidyut/lekhak/issues")
+            box.setDetailedText(reasons)
+            box.setStandardButtons(QMessageBox.Ok)
+            box.exec()
+            self._reload_tree()
+            return
         self.current_id = None
         self._reload_tree()
         self._refresh_outliner()

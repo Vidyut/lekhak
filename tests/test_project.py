@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from lekhak.project import Project
+from lekhak.project import DeleteError, Project
 
 
 class ProjectTests(unittest.TestCase):
@@ -50,6 +50,44 @@ class ProjectTests(unittest.TestCase):
         self.project.delete_document(root.id)
         self.assertEqual(self.project.documents(), [])
         self.assertFalse(self.project.content_path(child.id).exists())
+
+    def test_deleting_a_folder_removes_the_folder_from_disk(self):
+        # A container is a directory: deleting it takes the directory
+        # with it, not just the file inside it.
+        root = self.project.documents()[0]
+        folder = self.project.add_document("A Book", root.id, "folder")
+        scene = self.project.add_document("A Scene", folder.id, "scene")
+        folder_path = self.project.root / folder.path
+        scene_path = self.project.root / scene.path
+        self.assertTrue(folder_path.is_dir())
+        self.project.delete_document(folder.id)
+        self.assertFalse(folder_path.exists())
+        self.assertFalse(scene_path.exists())
+        self.assertEqual(
+            [d.id for d in self.project.documents() if d.id in
+             (folder.id, scene.id)], [])
+
+    def test_a_file_that_will_not_delete_keeps_the_document(self):
+        # A permission problem, a read-only mount, a lock: nothing is
+        # deleted, the document stays in the binder, and the reason is
+        # reported.
+        root = self.project.documents()[0]
+        scene = self.project.add_document("Stuck", root.id, "scene")
+        path = self.project.root / scene.path
+        real_unlink = Path.unlink
+
+        def refuse(self, *args, **kwargs):
+            if self == path:
+                raise PermissionError(13, "Permission denied")
+            return real_unlink(self, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", refuse):
+            with self.assertRaises(DeleteError) as caught:
+                self.project.delete_document(scene.id)
+        self.assertTrue(caught.exception.failures)
+        # The row is back, and the file is still there.
+        self.assertIn(scene.id, [d.id for d in self.project.documents()])
+        self.assertTrue(path.exists())
 
     def test_backup_is_recoverable(self):
         backup = self.project.backup()
