@@ -12,7 +12,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSettings, Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QTreeWidgetItem  # noqa: E402
 
 from lekhak.app import MainWindow  # noqa: E402
 from lekhak.project import Project  # noqa: E402
@@ -118,15 +118,14 @@ class BinderReorderTests(unittest.TestCase):
     def _find(self, document_id):
         return _find_item(self.window.tree, document_id)
 
-    def test_the_synthetic_templates_row_survives_the_sweep(self):
-        # The Templates area is furniture: its rows carry no document id,
-        # and reaching reorder() with None raised ValueError — killing the
-        # sweep before the book's children were renumbered.
-        templates = next(self.window.tree.topLevelItem(index)
-                         for index in range(self.window.tree.topLevelItemCount())
-                         if self.window.tree.topLevelItem(index).text(0)
-                         == "Templates")
-        self.assertIsNone(templates.data(0, Qt.UserRole))
+    def test_a_row_without_a_document_id_does_not_break_the_sweep(self):
+        # A row of furniture carries no document id, and reaching
+        # reorder() with None raised ValueError — killing the sweep
+        # before the book's children were renumbered. The guard stays
+        # whatever the binder holds.
+        furniture = QTreeWidgetItem(["Furniture"])
+        furniture.setData(0, Qt.UserRole, None)
+        self.window.tree.addTopLevelItem(furniture)
 
         self.window._tree_moved()                 # must not raise
 

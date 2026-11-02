@@ -7,8 +7,10 @@ binder "Templates" document tree, the in-app slot editor, and the folder mark
 redesign: the binder's Templates folder lists the sets that exist on disk, the
 Outliner lists one set's own files, a file opens in the regular HTML editor,
 one set may carry a per-format folder (§1.3), and a single file can be copied
-out into a set of its own. A line saying PROPOSED is a choice not yet made —
-say the word and it changes.
+out into a set of its own. Revised **2026-11-02**: the binder's Templates
+folder is gone — the binder is the writer's own tree and nothing else, and
+the sets are listed in the Outliner instead (View → *Template Sets*). A line
+saying PROPOSED is a choice not yet made — say the word and it changes.
 
 The goal in one sentence: **a project with no templates at all still exports
 a readable manuscript** — titles, heading pages, page breaks, A4 — and
@@ -16,9 +18,9 @@ everything beyond that is opt-in, visible, and shareable.
 
 The other goal, no less important: **a writer never has to read source code
 or guess a filename to find their templates.** Three sets ship with Lekhak —
-`default`, `short story`, `no export` — listed at the top of the binder's
-Templates folder, duplicable with a right-click, their folders opening on a
-click, and serving as the worked examples the documentation points at.
+`default`, `short story`, `no export` — listed together in the Outliner,
+duplicable with a right-click, their folders opening on a click, and serving
+as the worked examples the documentation points at.
 
 ---
 
@@ -64,19 +66,21 @@ overrides the default, and the default is A4 with a page per document (§4).
 
 ## 1.1 Where templates live in the UI
 
-**Templates are folders on disk, seen through three places — never a binder
+**Templates are folders on disk, seen through two places — never a binder
 container.** The old model's binder folder named `Templates` — a database
 fiction pointing at nothing — is gone with the system that used it; so is
 the `is_template` folder mark that replaced it, a second way of naming a
 template that ended up listed nowhere. What stands now:
 
-- **The binder's `Templates` folder lists every set that exists.** It is the
-  project's own `<project>/templates/` folder when the project has one and a
-  synthetic row when it does not, so the answer is always in the same place.
-  One row per set, flat: `templates/Book` is a row of its own, never
-  `Templates > Book`. The three shipped sets come first with **`default` on
-  top** — it is what every export answers to when nothing is assigned —
-  then the folders under the project's `templates/`, then the app library's.
+- **The Outliner lists every set that exists.** View → *Template Sets* shows
+  them: the project's own `<project>/templates/` folders and the app
+  library's, one row per set, flat: `templates/Book` is a row of its own,
+  never `Book > Something`. The three shipped sets come first with
+  **`default` on top** — it is what every export answers to when nothing is
+  assigned — then the folders under the project's `templates/`, then the app
+  library's. The binder holds only the writer's own tree: a template set is
+  a folder of fragments, not a document, and a second *Templates* folder in
+  the binder only ever said "where are my books?".
 - **The shipped three are non-editable and duplicable.** They live in the
   code, so there is nothing on disk to edit; right-click → *Duplicate into
   project…* forks that variant's own files into the project as an editable
@@ -100,9 +104,9 @@ template that ended up listed nowhere. What stands now:
   Listing and naming are separate: the *name* `default` keeps meaning the
   shipped set (§2, §Discovery).
 - **Selecting a set lists its files; clicking one opens it in the regular
-  editor** (§1.2): the binder says which set, the Outliner says what is in
-  it, and the file opens in the same editor prose does — a template file
-  is an HTML file, and there is nothing between the two.
+  editor** (§1.2): the Outliner says which set, then what is in it, and
+  the file opens in the same editor prose does — a template file is an
+  HTML file, and there is nothing between the two.
 - Right-click on a set: **Open folder** (the real folder, in the file
   manager), **Duplicate into project…**. Right-click on one of its files:
   **Copy out as its own template…** (§1.2).

@@ -27,6 +27,29 @@ The model is now the running application, not a plan.
 - **`migrate_to_tree.py`** converts a project made before this: it writes the
   tree from the old database and records the paths.
 
+### As built (2026-11-02)
+
+- **The binder is drawn from the files.** `Project.binder_tree()` walks the
+  tree on disk and joins the index in for what only the index knows — the
+  document's id, and the title the writer gave it. A folder or file the
+  writer added by hand is in the binder from the moment it exists. The icon
+  says what the thing *is* on disk — a directory is a folder, an `.html` file
+  is a document — whatever role the row gives it, so a chapter holding scenes
+  wears a folder's icon.
+- **A container's own `index.html` is its prose, not a child of it.** The
+  index never grows a second row for that file, and the binder never shows
+  the same words twice.
+- **A lock is a marker file in the tree.** `.locked` inside a folder locks
+  that folder and everything inside it; `.<name>.locked` beside a file locks
+  that file. The tick beside the Type row says whether the marker is there;
+  the marker is the truth, and it travels with a copied folder.
+- **A leaf that gains children moves before its child is placed.** The
+  child's path is worked out *after* the promotion from `X.html` to the
+  directory `X/`, so the two halves of one binder cannot end up in two
+  trees. `repair_tree.py` puts an older split back together — it finds the
+  ghost directories (a directory named like a file), moves their contents
+  where they belong, and takes a backup before it touches anything.
+
 The rest of this document is the design record — the reasoning, the decisions
 and the experiments that led here. Where it describes the planned `.lekhak/`
 machinery, read it as the proposal that the simpler `manifest.json` +
@@ -255,6 +278,12 @@ differently from the way Lekhak does.
   and if a file changed on disk while it was open here, offer **Reload**,
   **Keep mine** or **Keep both** — never a silent reload, which would discard
   what is in the editor.
+- **A lock is a marker file in the tree.** `.locked` inside a folder locks
+  that folder and everything inside it; `.<name>.locked` beside a file locks
+  that file. A locked document still opens, still reads, and can still be
+  typed in — it is simply never written, and the writer is told so rather
+  than losing the words quietly. Unlocking takes the marker away; nothing
+  else changes.
 
 ## Risks to keep in view
 

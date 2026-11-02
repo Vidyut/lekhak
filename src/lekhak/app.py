@@ -663,6 +663,9 @@ TEMPLATE_FOLDER_KIND = "template-folder"   # a subfolder inside a set
 TEMPLATE_FILE_KIND = "template-file"       # a file inside a set
 TEMPLATE_SET_ROLE = Qt.UserRole + 2        # the TemplateSet object
 TEMPLATE_PATH_ROLE = Qt.UserRole + 4       # the file's path inside its set
+# What the thing is on disk: a directory is a folder, an .html file is a
+# document. The icon says this, whatever role the row gives it.
+FOLDER_ROLE = Qt.UserRole + 3
 
 
 def template_set_where(template_set, project_root: Path) -> str:
@@ -2154,6 +2157,19 @@ class MainWindow(QMainWindow):
         self.type_keep_box.setVisible(False)
         self.type_keep_box.toggled.connect(self._type_keep_toggled)
 
+        # The lock (docs/STORAGE.md): a tick beside the Type row, because
+        # a lock is not one of the writer's custom fields — it is a
+        # marker file in the tree, and the tick only says whether that
+        # file is there. It belongs to the *selected document*, even
+        # where the fields below are the project's own.
+        self.lock_box = QCheckBox("Locked")
+        self.lock_box.setToolTip(
+            "Lock this document against saving. A locked folder locks "
+            "everything inside it. The lock is a marker file in the tree, "
+            "so it travels with a copied folder."
+        )
+        self.lock_box.toggled.connect(self._lock_toggled)
+
         # Metadata (1.12): the same Field/Format/Options/Value rows the
         # Edit Metadata dialog edits, inline and live — project-level
         # fields on folders/root, the document's own rows everywhere
@@ -2196,6 +2212,7 @@ class MainWindow(QMainWindow):
         type_row = QHBoxLayout()
         type_row.addWidget(self.type_label)
         type_row.addWidget(self.type_box, 1)
+        type_row.addWidget(self.lock_box)
         metadata_layout.addSpacing(8)
         metadata_layout.addLayout(type_row)
         metadata_layout.addWidget(self.type_warning)
@@ -2438,6 +2455,10 @@ class MainWindow(QMainWindow):
         self._action(view_menu, "Zoom Out", QKeySequence.ZoomOut, self.zoom_out)
         self._action(view_menu, "Reset Zoom", "Ctrl+0", self.reset_zoom)
         self._action(view_menu, "Focus Mode", "F11", self.toggle_focus_mode)
+        # The template sets (docs/TEMPLATES.md §1.1): they are folders on
+        # disk, not documents, so they are listed here rather than in the
+        # binder — the binder is the writer's own tree.
+        self._action(view_menu, "Template Sets", None, self.show_template_sets)
         # Spell squiggles (8): deterministic dictionary pass — no model,
         # no network; red wavy underlines, off until asked for.
         self.spell_action = QAction("Spell-check Squiggles", self)
@@ -2791,32 +2812,47 @@ class MainWindow(QMainWindow):
         }
         self.tree.clear()
         items: dict[str, QTreeWidgetItem] = {}
-        documents = self.project.documents()
-        # A folder stays where the writer put it — templates are folders
-        # on disk, not a binder area (docs/TEMPLATES.md) — so this is
-        # One pass in binder order and nothing is lifted or recoloured.
+        # The folder tree on disk is the truth (docs/STORAGE.md), so the
+        # binder is drawn from the files, with the index joined in for
+        # the ids and titles. Anything the writer added by hand is
+        # picked up here.
+        try:
+            self.project.sync_with_disk()
+        except Exception:
+            pass
+        documents = {document.id: document
+                     for document in self.project.documents()}
 
-        def make_item(document) -> QTreeWidgetItem:
-            item = QTreeWidgetItem([document.title])
-            item.setData(0, Qt.UserRole, document.id)
-            item.setData(0, Qt.UserRole + 1, document.kind)
-            item.setToolTip(0, self.project.type_of(document))
-            if document.kind == "folder":
-                item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
+        def make_item(node) -> QTreeWidgetItem:
+            item = QTreeWidgetItem([node.title])
+            item.setData(0, Qt.UserRole, node.document_id)
+            item.setData(0, Qt.UserRole + 1, node.kind)
+            # What the thing *is* on disk, which is what the icon says:
+            # a directory is a folder, an .html file is a document,
+            # whatever role the row calls it.
+            item.setData(0, FOLDER_ROLE, node.is_folder)
+            document = documents.get(node.document_id)
+            item.setToolTip(0, self.project.type_of(document) if document
+                            else (node.title if node.is_folder else "Document"))
+            item.setIcon(0, self.style().standardIcon(
+                QStyle.SP_DirIcon if node.is_folder else QStyle.SP_FileIcon))
             item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
             return item
 
-        for document in documents:
-            item = make_item(document)
-            if document.parent_id and document.parent_id in items:
-                items[document.parent_id].addChild(item)
-            else:
+        def add(node, parent: QTreeWidgetItem | None) -> None:
+            item = make_item(node)
+            if parent is None:
                 self.tree.addTopLevelItem(item)
-            items[document.id] = item
-        # The template sets hang under the project's templates folder
-        # (docs/TEMPLATES.md §1.1): the folder is a real one on disk, and
-        # the sets are the folders inside it.
-        self._add_template_items(items, documents)
+            else:
+                parent.addChild(item)
+            if node.document_id:
+                items[node.document_id] = item
+            for child in node.children:
+                add(child, item)
+
+        for node in self.project.binder_tree():
+            add(node, None)
+        self._apply_lock_marks()
         # Expansion is applied after the tree is built, so a folder opens
         # with its children already in place. What was open stays open;
         # on a first load everything starts closed (bug report: opening
@@ -2829,46 +2865,7 @@ class MainWindow(QMainWindow):
         self.loading = False
         if select_id and select_id in items:
             self.tree.setCurrentItem(items[select_id])
-        elif self.current_template_set is not None:
-            item = self._binder_item_for_template_set(self.current_template_set)
-            if item is not None:
-                self.tree.setCurrentItem(item)
         self._refresh_outliner()
-
-    def _add_template_items(self, items, documents) -> None:
-        """Put the template sets in the binder, under a Templates area.
-
-        The area is the project's ``templates/`` folder — a real one, in
-        the tree like any other (docs/TEMPLATES.md §1.1). The set rows
-        are the folders inside it, so they carry no document id of their
-        own: the sets are files on disk, the one truth.
-        """
-        host_id = next(
-            (d.id for d in documents
-             if d.parent_id is None and d.kind == "folder"
-             and (d.path or "").strip("/") == "templates"),
-            None,
-        )
-        if host_id is not None:
-            host = items[host_id]
-            host.setData(0, Qt.UserRole + 1, TEMPLATE_GROUP_KIND)
-            host.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        else:
-            host = QTreeWidgetItem(["Templates"])
-            host.setData(0, Qt.UserRole, None)
-            host.setData(0, Qt.UserRole + 1, TEMPLATE_GROUP_KIND)
-            host.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
-            host.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            self.tree.addTopLevelItem(host)
-        for template_set in discover_template_sets(self.project.root):
-            child = QTreeWidgetItem([template_set.name])
-            child.setData(0, Qt.UserRole, None)
-            child.setData(0, Qt.UserRole + 1, TEMPLATE_SET_KIND)
-            child.setData(0, TEMPLATE_SET_ROLE, template_set)
-            child.setToolTip(0, template_set_where(template_set,
-                                                   self.project.root))
-            child.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            host.addChild(child)
 
     def _outliner_column_ids(self) -> list[str]:
         if not self.project:
@@ -3091,8 +3088,9 @@ class MainWindow(QMainWindow):
     def _outliner_clicked(self, item, _column) -> None:
         kind = item.data(0, Qt.UserRole + 1)
         if kind == TEMPLATE_SET_KIND:
-            # A set listed from the Templates area: the binder follows.
-            self._select_template_set(item.data(0, TEMPLATE_SET_ROLE))
+            # A set listed in the Outliner: its own files are listed in
+            # its place, and one of them opens in the editor (§1.2).
+            self._open_template_set(item.data(0, TEMPLATE_SET_ROLE))
             return
         if kind == TEMPLATE_FILE_KIND:
             # A file of the chosen set opens in the editor (§1.2) — the
@@ -3310,6 +3308,13 @@ class MainWindow(QMainWindow):
             self.synopsis.setPlainText(document.synopsis)
             self.target.setValue(document.word_target)
             self._refresh_book_widgets(document)
+            # A locked document is opened like any other, and says so:
+            # the writer can read it, reference it, and even type in it
+            # — but nothing is saved.
+            holder = self.project.lock_holder(self.current_id)
+            if holder is not None:
+                self.statusBar().showMessage(
+                    f"Locked by ‘{holder}’ — changes are not saved", 6000)
             # Capture before toggling visibility: hiding the current tab
             # makes Qt pick a neighbour, so the old widget is the only
             # reliable evidence of where the writer was. Signals are
@@ -3724,10 +3729,16 @@ class MainWindow(QMainWindow):
         if current is None or self.project is None:
             self.type_box.hide()
             self.type_label.hide()
+            self.lock_box.hide()
         else:
             self.type_box.show()
             self.type_label.show()
+            self.lock_box.show()
             self._fill_type_box(self.project.type_of(current))
+            # The tick follows the marker file, which is the truth.
+            self.lock_box.blockSignals(True)
+            self.lock_box.setChecked(self.project.has_own_lock(current.id))
+            self.lock_box.blockSignals(False)
         if target is None:
             self.metadata_table.set_entries({})
         elif target == PROJECT_METADATA_TARGET:
@@ -3739,6 +3750,47 @@ class MainWindow(QMainWindow):
             self.metadata_table.set_entries(
                 {key: entry for key, entry in entries.items() if key != "Type"}
             )
+
+    def _lock_toggled(self, locked: bool) -> None:
+        """Lock or unlock the selected document.
+
+        The tick writes the marker file and takes it away again; the
+        file is the truth, and the binder says so straight away.
+        """
+        if self.loading or not self.project or not self._type_target_id:
+            return
+        self.project.set_locked(self._type_target_id, locked)
+        self._apply_lock_marks()
+
+    def _apply_lock_marks(self) -> None:
+        """Say, in the binder, which rows are locked.
+
+        The lock is a marker file in the tree (docs/STORAGE.md), so the
+        binder's own mark follows the file. A row that carries the lock
+        says so outright; a row inside a locked folder says so in its
+        tooltip, because the lock is the folder's and the writer should
+        know which.
+
+        The icon keeps saying what the thing *is* — a folder or a
+        document — so the lock never makes a folder look like a file.
+        """
+        if not self.project:
+            return
+        locked = self.project.locked_ids()
+        own = {document.id for document in self.project.documents()
+               if self.project.has_own_lock(document.id)}
+        for item in self._all_items():
+            document_id = item.data(0, Qt.UserRole)
+            if not document_id:
+                continue
+            if document_id in own:
+                item.setToolTip(0, "Locked — changes are not saved")
+                font = item.font(0)
+                font.setBold(True)
+                item.setFont(0, font)
+            elif document_id in locked:
+                item.setToolTip(0, "Locked by the folder it sits in — "
+                                   "changes are not saved")
 
     def _fill_type_box(self, value: str) -> None:
         """Rebuild the Type dropdown and set it, without firing saves.
@@ -4210,6 +4262,15 @@ class MainWindow(QMainWindow):
         if not self.current_id:
             return True
         self.save_timer.stop()
+        # A locked document is not written. The writing stays exactly as
+        # it is — which is the point of locking a published book — and
+        # the writer is told, so nothing is ever lost silently.
+        if self.project.is_locked(self.current_id):
+            holder = self.project.lock_holder(self.current_id)
+            self.statusBar().showMessage(
+                f"Locked{'' if holder is None else f' ({holder})'} — "
+                "not saved", 5000)
+            return True
         # A container is not prose: the editor is empty for it, so
         # writing would put an empty index.html in the folder. Its own
         # words, if it has any, are not edited from here.
@@ -4287,6 +4348,24 @@ class MainWindow(QMainWindow):
 
     def manual_save(self) -> None:
         if not self.project:
+            return
+        if self.project.is_locked(self.current_id or ""):
+            # Saving a locked document would change a book the writer
+            # has deliberately set aside. Say so plainly, and say what
+            # to do about it.
+            holder = self.project.lock_holder(self.current_id or "")
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Information)
+            box.setWindowTitle("Locked")
+            box.setText("This document is locked, so it was not saved.")
+            box.setInformativeText(
+                (f"‘{holder}’ is locked" if holder else "This document is locked")
+                + ", so nothing Lekhak does will change it.\n\n"
+                "You can still write in the editor — the words stay in the "
+                "window until you move on, but they are not saved to the "
+                "file.\n\n"
+                "To change it, untick Locked beside the Type row.")
+            box.exec()
             return
         if not self.save_current():
             return          # the dialog has explained; no backup either
@@ -4824,6 +4903,7 @@ class MainWindow(QMainWindow):
         self.current_template_file = None
         self._show_template_panel(False)     # the metadata comes back
         self.current_id = None
+        self._clear_binder_selection()
         self.loading = True
         self.editor.clear()
         self.editor.begin_document(self.project, None)
@@ -4846,10 +4926,23 @@ class MainWindow(QMainWindow):
         self.loading = False
         self._update_word_count()
 
+    def _clear_binder_selection(self) -> None:
+        """Let go of the binder's current item.
+
+        The editor has been emptied — no document is open — so the
+        binder must not keep a document highlighted: the writer would
+        click it again, the tree would say "already selected", and
+        nothing would happen.
+        """
+        self.tree.blockSignals(True)
+        self.tree.setCurrentItem(None)
+        self.tree.clearSelection()
+        self.tree.blockSignals(False)
+
     def _open_template_group(self) -> None:
         """Stand on the Templates area: no document is open and the
-        Outliner lists the sets — 'which set' answered in the binder and
-        in the Outliner, the way a folder answers 'which chapters'."""
+        Outliner lists the sets — 'which set' answered in the Outliner,
+        the way a folder answers 'which chapters'."""
         if not self.project:
             return
         self.current_template_set = None
@@ -4857,6 +4950,7 @@ class MainWindow(QMainWindow):
         self.current_template_file = None
         self._show_template_panel(False)     # the metadata comes back
         self.current_id = None
+        self._clear_binder_selection()
         self.loading = True
         self.editor.clear()
         self.editor.begin_document(self.project, None)
@@ -4868,6 +4962,15 @@ class MainWindow(QMainWindow):
         self._refresh_outliner()
         self.loading = False
         self._update_word_count()
+
+    def show_template_sets(self) -> None:
+        """List the template sets in the Outliner (docs/TEMPLATES.md §1.1).
+
+        The sets are folders on disk rather than documents, so they do
+        not clutter the binder — the writer's own tree — and are reached
+        from here instead.
+        """
+        self._open_template_group()
 
     def _open_template_file(self, relative: str) -> None:
         """Open one file of the chosen set in the regular editor (§1.2).
@@ -4963,6 +5066,7 @@ class MainWindow(QMainWindow):
             return
         self.current_id = None
         self.current_template_file = path
+        self._clear_binder_selection()
         head, fragment = split_head(text)
         self.template_config_box.setReadOnly(False)
         self.editor.setReadOnly(False)
@@ -5518,23 +5622,6 @@ class MainWindow(QMainWindow):
             return
         self._template_css_loaded = text
 
-    def _binder_item_for_template_set(self, template_set):
-        for item in self._all_items():
-            if (item.data(0, Qt.UserRole + 1) == TEMPLATE_SET_KIND
-                    and item.data(0, TEMPLATE_SET_ROLE) is not None
-                    and item.data(0, TEMPLATE_SET_ROLE).name == template_set.name):
-                return item
-        return None
-
-    def _select_template_set(self, template_set) -> bool:
-        """Pick a set in the binder by name; the selection then opens its
-        sheet and lists its files (its own selection handler does both)."""
-        item = self._binder_item_for_template_set(template_set)
-        if item is None:
-            return False
-        self.tree.setCurrentItem(item)
-        return True
-
     def _duplicate_template(self, source, name: str) -> None:
         """Fork a set into the project and land in the copy, ready to
         edit — the whole point of duplicating one."""
@@ -5549,8 +5636,9 @@ class MainWindow(QMainWindow):
             f"Duplicated into {project_template_root(self.project.root)}"
             f"/{created.name}", 5000)
         self._reload_tree()
-        if not self._select_template_set(created):
-            self._open_template_set(created)
+        # The sets are not in the binder, so the copy is opened where it
+        # is listed — the Outliner (§1.1).
+        self._open_template_set(created)
 
     def _outliner_context_menu(self, position) -> None:
         """Right-click inside a set's own listing (§1.1).
@@ -5602,8 +5690,7 @@ class MainWindow(QMainWindow):
             f"Copied into {project_template_root(self.project.root)}"
             f"/{created.name}", 5000)
         self._reload_tree()
-        if not self._select_template_set(created):
-            self._open_template_set(created)
+        self._open_template_set(created)
 
     def _tree_context_menu(self, position) -> None:
         item = self.tree.itemAt(position)

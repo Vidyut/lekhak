@@ -50,7 +50,7 @@ looks.
 - **Exports you can hand to anyone.** Manuscript or finished book, in DOCX,
   EPUB, PDF, HTML, Markdown or plain text. Templates decide how it looks.
 - **Three templates to start from.** `default`, `short story` and
-  `no export` ship with Lekhak, listed at the top of the Templates folder —
+  `no export` ship with Lekhak, listed under View → *Template Sets* —
   the ordinary book, a unit-dressed collection on A4, and a set that outputs
   nothing. They exist to be read: right-click one, duplicate it, and edit
   your copy.

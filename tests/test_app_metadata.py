@@ -59,6 +59,42 @@ class MetadataPanelTests(unittest.TestCase):
         self.assertEqual(table.item(0, 0).text(), "POV")
         self.assertEqual(table.item(0, 1).text(), "Maya")
 
+    def test_the_lock_is_a_tick_of_its_own_not_a_custom_field(self):
+        # The lock is a marker file in the tree (docs/STORAGE.md), not one
+        # of the writer's fields: the table's rows are the writer's own,
+        # and the tick lives beside the Type row.
+        self.window._select_document(self.scene.id)
+
+        table = self.window.metadata_table
+        names = [table.item(row, 0).text() for row in range(table.rowCount())]
+        self.assertNotIn("Locked", names)
+        self.assertTrue(self.window.lock_box.isVisibleTo(self.window))
+        self.assertFalse(self.window.lock_box.isChecked())
+
+    def test_the_lock_tick_follows_the_selected_document(self):
+        self.project.set_locked(self.scene.id, True)
+
+        self.window._select_document(self.scene.id)
+
+        self.assertTrue(self.window.lock_box.isChecked())
+
+    def test_ticking_the_lock_writes_the_marker(self):
+        self.window._select_document(self.scene.id)
+
+        self.window.lock_box.setChecked(True)
+
+        self.assertTrue(self.project.is_locked(self.scene.id))
+        self.assertTrue((self.project.root / self.scene.path).with_name(
+            "." + Path(self.scene.path).name + ".locked").is_file())
+
+    def test_unticking_the_lock_takes_the_marker_away(self):
+        self.project.set_locked(self.scene.id, True)
+        self.window._select_document(self.scene.id)
+
+        self.window.lock_box.setChecked(False)
+
+        self.assertFalse(self.project.is_locked(self.scene.id))
+
     def test_folder_selection_shows_project_metadata(self):
         self.project.set_project_metadata({"Series": ("Series", "text", [])})
         # Select away first: the panel refreshes on a selection CHANGE,

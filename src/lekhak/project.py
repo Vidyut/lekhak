@@ -41,7 +41,7 @@ import sqlite3
 import tempfile
 import uuid
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html import escape, unescape
 from pathlib import Path
@@ -73,6 +73,21 @@ URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.I)
 # Pruning matches this exactly so a writer's own folders in a
 # writer-chosen backup directory are never mistaken for our old backups.
 BACKUP_STAMP_RE = re.compile(r"\d{8}-\d{6}-\d{6}")
+# The marker that locks a folder or a document against editing. It is a
+# file in the tree, like ``.order.json``: the truth about the lock, and
+# it travels with a copied folder.
+LOCK_FILE = ".locked"
+
+# The project's own furniture: the things that live in the project folder
+# but are not part of the manuscript. The writer's tree is everything
+# else.
+PROJECT_FURNITURE = frozenset({
+    "project.sqlite3", "manifest.json", "backups", "documents", ".lekhak",
+})
+# The templates area: the folder of template sets at the project's root.
+# It is not manuscript — the sets are listed by the template code, and
+# they are reached from the Outliner.
+TEMPLATES_FOLDER = "templates"
 
 # Kinds are labels, not structure: any item may contain any other, at any
 # depth, and several items may share the top level. Folder is a neutral
@@ -606,6 +621,26 @@ class Snapshot:
     created_at: str
 
 
+@dataclass
+class DiskNode:
+    """One thing on disk, as the binder shows it.
+
+    The tree the binder draws is the folder tree itself
+    (docs/STORAGE.md): ``path`` is where the thing lives, ``is_folder``
+    says whether it is a directory or an ``.html`` file, and
+    ``document_id`` is the row the index keeps for it — the join between
+    the two. A node with no row is something the writer put on disk by
+    hand; the index catches up with it, and until then it is shown but
+    not editable.
+    """
+    path: str
+    title: str
+    is_folder: bool
+    document_id: str | None = None
+    kind: str = "scene"
+    children: list["DiskNode"] = field(default_factory=list)
+
+
 class DeleteError(Exception):
     """A file could not be removed, so nothing was deleted.
 
@@ -939,12 +974,19 @@ class Project:
             (parent_id,),
         ).fetchone()
         position = int(row[0])
-        relative = self._new_relative_path(title, parent_id, kind)
         if parent_id:
             # A parent that gains children is a container, whatever its
             # stored kind (docs/STORAGE.md: kind is a label, not
             # structure). On disk that means a directory.
+            #
+            # This happens **before** the new document's own path is
+            # worked out. A leaf that becomes a container moves from
+            # ``X.html`` to the directory ``X/``, so a path worked out
+            # against the old name would land the child in a ghost tree
+            # — ``X.html/`` beside the real ``X/`` — and the two halves
+            # of one binder would never meet again.
             self._promote_to_container(parent_id)
+        relative = self._new_relative_path(title, parent_id, kind)
         is_container = kind in ("folder", "chapter")
         if is_container:
             # A container is a directory on disk (docs/STORAGE.md), with
@@ -985,6 +1027,13 @@ class Project:
         hold scenes. On disk a container is a directory, so the leaf's
         file becomes the directory's own ``index.html`` — its prose
         travels with it, nothing is lost.
+
+        A directory of that name may already be there: a writer's own
+        folder, or a second document that wanted the same name. The
+        leaf's words move into it as its index when it has no index of
+        its own; when it already has one, the leaf's file is left alone
+        on disk — nothing is destroyed — and the row points at the
+        folder, which is where the children live.
         """
         row = self.db.execute(
             "SELECT path FROM documents WHERE id = ?", (document_id,)
@@ -996,20 +1045,48 @@ class Project:
             return
         leaf = self.root / relative
         folder = leaf.with_suffix("")
-        if folder.exists():
-            return
-        if not leaf.exists():
-            return
-        folder.mkdir(parents=True, exist_ok=True)
-        leaf.rename(folder / "index.html")
-        (folder / ".order.json").write_text(
-            json.dumps({"children": []}, ensure_ascii=False) + "\n",
-            encoding="utf-8")
+        if not folder.exists():
+            if not leaf.exists():
+                return
+            folder.mkdir(parents=True, exist_ok=True)
+            leaf.rename(folder / "index.html")
+        elif leaf.exists() and not (folder / "index.html").exists():
+            # The directory is there and has no index of its own: the
+            # leaf's prose becomes it.
+            leaf.rename(folder / "index.html")
+        if not (folder / ".order.json").is_file():
+            (folder / ".order.json").write_text(
+                json.dumps({"children": []}, ensure_ascii=False) + "\n",
+                encoding="utf-8")
         self.db.execute(
             "UPDATE documents SET path=? WHERE id=?",
             (str(folder.relative_to(self.root)), document_id),
         )
         self.db.commit()
+
+    def _container_dir(self, document_id: str) -> Path:
+        """The directory a document's children live in.
+
+        A container is a directory (docs/STORAGE.md). A leaf that gains
+        children is promoted to one before anything is added to it, so
+        by then its path *is* the directory; the fallback covers a leaf
+        whose file has gone missing, so the children still land
+        somewhere sensible.
+        """
+        row = self.db.execute(
+            "SELECT path FROM documents WHERE id = ?", (document_id,)
+        ).fetchone()
+        relative = str(row[0] or "") if row is not None else ""
+        if not relative:
+            return self.root
+        path = self.root / relative
+        if path.is_dir():
+            return path
+        if path.suffix.lower() == ".html":
+            sibling = path.with_suffix("")
+            if sibling.is_dir():
+                return sibling
+        return path
 
     def _new_relative_path(self, title: str, parent_id: str | None,
                            kind: str) -> str:
@@ -1022,14 +1099,7 @@ class Project:
         made unique among its siblings, so two documents called
         "Prologue" both live.
         """
-        parent_path = ""
-        if parent_id:
-            row = self.db.execute(
-                "SELECT path FROM documents WHERE id = ?", (parent_id,)
-            ).fetchone()
-            if row is not None:
-                parent_path = str(row[0] or "")
-        base = self.root / parent_path if parent_path else self.root
+        base = self._container_dir(parent_id) if parent_id else self.root
         stem = clean_name(title)
         is_container = kind in ("folder", "chapter")
         name = stem if is_container else f"{stem}.html"
@@ -1040,7 +1110,10 @@ class Project:
             suffix = f"-{counter}" if is_container else f"-{counter}.html"
             candidate = stem + suffix
             counter += 1
-        return str(Path(parent_path) / candidate) if parent_path else candidate
+        parent_path = base.relative_to(self.root)
+        if str(parent_path) in (".", ""):
+            return candidate
+        return str(parent_path / candidate)
 
     def find_child_folder(self, title: str, parent_id: str | None = None) -> Document | None:
         """The child folder of ``parent_id`` with this title, or None.
@@ -1228,6 +1301,13 @@ class Project:
             current.rename(wanted)
         except OSError:
             return
+        # A document's lock marker travels with it.
+        marker = self.lock_marker(document_id)
+        if marker is not None and marker.exists():
+            try:
+                marker.rename(wanted.with_name("." + wanted.name + LOCK_FILE))
+            except OSError:
+                pass
         self.db.execute(
             "UPDATE documents SET path=? WHERE id=?",
             (str(wanted.relative_to(self.root)), document_id),
@@ -1556,6 +1636,17 @@ class Project:
             path = self.root / relative
             if path.suffix.lower() != ".html":
                 return path / "index.html"
+            if path.is_dir():
+                # The row names a directory. Whatever the row calls it,
+                # a container's prose is its own index — the same place
+                # it would be if the row had said so.
+                return path / "index.html"
+            if not path.exists():
+                # The row says "X.html" where the tree says "X/": the
+                # container is the directory beside it.
+                sibling = path.with_suffix("")
+                if sibling.is_dir():
+                    return sibling / "index.html"
             return path
         return self.documents_dir / f"{document_id}.html"
 
@@ -2010,6 +2101,10 @@ class Project:
         whose file has gone keeps its row but loses its file, which
         reads as an empty document rather than a mystery.
 
+        A container's own ``index.html`` is its prose, not a document of
+        its own: the row for the container already stands for that file,
+        so the index never grows a second row for it.
+
         Returns how many rows were added.
         """
         known = {
@@ -2021,8 +2116,8 @@ class Project:
         for folder, relative in self._disk_tree():
             if relative in known:
                 continue
-            if relative == "templates":
-                continue        # the templates row is handled below
+            if Path(relative).name.lower() == "index.html":
+                continue        # a container's own prose, not a child
             title = Path(relative).stem if relative.endswith(".html") \
                 else Path(relative).name
             parent_relative = str(Path(relative).parent)
@@ -2035,8 +2130,182 @@ class Project:
             document_id = self._insert_row(title, parent_id, kind, relative)
             known[relative] = document_id
             added += 1
-        self._ensure_templates_row()
+        # A row that points at a container's own index is a leftover of
+        # an older index: the container's row stands for that file, so
+        # the second row is dropped — otherwise the binder shows the
+        # same words twice, once as the folder and once as a document.
+        for relative, document_id in list(known.items()):
+            if Path(relative).name.lower() != "index.html":
+                continue
+            parent = str(Path(relative).parent)
+            if parent in (".", ""):
+                continue
+            if parent in known:
+                self._forget_row(document_id)
+                known.pop(relative, None)
         return added
+
+    def _forget_row(self, document_id: str) -> None:
+        """Drop a row from the index, leaving what is on disk alone.
+
+        Used where the index has a row the tree does not need: the
+        container's own ``index.html`` is already spoken for by the
+        container's row, and two rows for one file is a binder that
+        shows the same words twice.
+        """
+        with self.db:
+            self.db.execute("DELETE FROM documents WHERE id=?", (document_id,))
+
+    def binder_tree(self) -> list[DiskNode]:
+        """The project as the binder shows it: the folder tree, on disk.
+
+        The tree is walked on disk, not read out of the database
+        (docs/STORAGE.md): the files are the truth and the database is
+        the index over them. The index is joined in for what only it
+        knows — the document's id, and the title the writer gave it.
+
+        A row whose file has gone is still shown, in its place in the
+        tree: an empty document is a thing the writer can see and mend,
+        a vanished one is a mystery.
+        """
+        documents = self.documents()
+        if any(not document.path for document in documents):
+            # A project made before the tree existed: its documents live
+            # in the old store, and the database is still the only place
+            # the structure is written down.
+            return self._tree_from_database(documents)
+        by_path = {document.path: document for document in documents}
+        nodes: dict[str, DiskNode] = {}      # document id -> its node
+
+        def walk(folder: Path, relative: str) -> list[DiskNode]:
+            children: list[DiskNode] = []
+            for entry in self._ordered_entries(folder, relative):
+                child_relative = (str(Path(relative) / entry.name)
+                                  if relative else entry.name)
+                if entry.is_dir():
+                    node = DiskNode(path=child_relative, title=entry.name,
+                                    is_folder=True)
+                    node.children = walk(entry, child_relative)
+                    children.append(node)
+                elif entry.suffix.lower() == ".html":
+                    if entry.name.lower() == "index.html":
+                        # A container's own prose, not a child of it.
+                        continue
+                    children.append(DiskNode(path=child_relative,
+                                             title=entry.stem,
+                                             is_folder=False))
+            return children
+
+        roots = walk(self.root, "")
+
+        def join(node: DiskNode) -> None:
+            document = by_path.get(node.path)
+            if document is not None:
+                node.document_id = document.id
+                node.title = document.title
+                node.kind = document.kind
+                nodes[document.id] = node
+            for child in node.children:
+                join(child)
+
+        for node in roots:
+            join(node)
+        # A row whose file has gone keeps its place in the tree.
+        parent_ids = {document.parent_id for document in documents
+                      if document.parent_id}
+        for document in documents:
+            if document.id in nodes or not document.path:
+                continue
+            node = DiskNode(path=document.path, title=document.title,
+                            is_folder=(document.kind == "folder"
+                                       or document.id in parent_ids),
+                            document_id=document.id, kind=document.kind)
+            parent = nodes.get(document.parent_id or "")
+            if parent is not None:
+                parent.children.append(node)
+            else:
+                roots.append(node)
+        return roots
+
+    def _tree_from_database(self, documents: list[Document]) -> list[DiskNode]:
+        """The tree as the database records it.
+
+        For a project that has no folder tree of its own — one made
+        before the tree existed — the database is the only place the
+        structure is written down, so it is what the binder shows.
+        """
+        by_parent: dict[str | None, list[Document]] = {}
+        for document in documents:
+            by_parent.setdefault(document.parent_id, []).append(document)
+        parent_ids = {document.parent_id for document in documents
+                      if document.parent_id}
+
+        def build(parent_id: str | None) -> list[DiskNode]:
+            nodes: list[DiskNode] = []
+            for document in sorted(by_parent.get(parent_id, []),
+                                   key=lambda d: d.position):
+                node = DiskNode(
+                    path=document.path, title=document.title,
+                    is_folder=(document.kind == "folder"
+                               or document.id in parent_ids),
+                    document_id=document.id, kind=document.kind)
+                node.children = build(document.id)
+                nodes.append(node)
+            return nodes
+
+        return build(None)
+
+    def _ordered_entries(self, folder: Path, relative: str) -> list[Path]:
+        """A folder's children, in the order the tree records.
+
+        The order file is the sequence on disk (docs/STORAGE.md); the
+        manifest holds the root's. Anything the order file does not
+        name — something the writer added by hand — comes after, in
+        name order, so the tree is never left out of what is there.
+
+        The project's own furniture is skipped at the root only: a
+        writer's own book called "documents" is theirs, wherever it
+        stands.
+        """
+        try:
+            entries = [entry for entry in folder.iterdir()
+                       if not entry.name.startswith(".")
+                       and not (not relative
+                                and (entry.name in PROJECT_FURNITURE
+                                     or entry.name == TEMPLATES_FOLDER))]
+        except OSError:
+            return []
+        order = self._order_names(folder, relative)
+        rank = {name: index for index, name in enumerate(order)}
+
+        def key(entry: Path) -> tuple[int, int, str]:
+            name = entry.name
+            if name in rank:
+                return (0, rank[name], name.casefold())
+            return (1, 0, name.casefold())
+
+        return sorted(entries, key=key)
+
+    def _order_names(self, folder: Path, relative: str) -> list[str]:
+        """The names a folder's order file gives, in order."""
+        if relative:
+            path = folder / ".order.json"
+            if not path.is_file():
+                return []
+        else:
+            path = self.root / "manifest.json"
+            if not path.is_file():
+                return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(data, dict):
+            return []
+        names = data.get("children", [])
+        if not isinstance(names, list):
+            return []
+        return [str(name) for name in names]
 
     def _insert_row(self, title: str, parent_id: str | None, kind: str,
                     path: str) -> str:
@@ -2103,36 +2372,14 @@ class Project:
         kind = str(metadata.get("kind") or "").strip()
         return kind if kind in DOCUMENT_KINDS else ""
 
-    def _ensure_templates_row(self) -> None:
-        """Keep the binder's handle on the templates folder.
-
-        The templates live in ``<project>/templates/`` (docs/TEMPLATES.md),
-        and the binder's Templates area is that folder: one row, so the
-        sets are reachable in any project.
-
-        The folder is recognised **by its place, not its name**: a writer
-        may well have a book of their own called "Templates", and that
-        folder is theirs. Only the row that already names ``templates/``
-        is the templates root; if there is none, one is made, and no row
-        is ever repointed.
-        """
-        templates_root = self.root / "templates"
-        if not templates_root.is_dir():
-            return
-        existing = self.db.execute(
-            "SELECT id FROM documents WHERE path='templates' LIMIT 1"
-        ).fetchone()
-        if existing is not None:
-            return
-        self._insert_row("Templates", None, "folder", "templates")
-
     def _disk_tree(self):
         """Every folder and document file in the project, on disk.
 
-        The project's own furniture — the database, the backups — is not
-        part of the manuscript, so it is not walked. The templates
-        folder is walked only for its own sake: the sets are listed by
-        the template code, not as manuscript.
+        The project's own furniture — the database, the manifest, the
+        backups — is not part of the manuscript, so it is not walked,
+        and neither is the templates area: the sets are listed by the
+        template code, not as manuscript. The furniture is skipped at
+        the root only: a writer's own book called "documents" is theirs.
         """
         skip = {"backups", "documents", ".lekhak"}
 
@@ -2142,18 +2389,109 @@ class Project:
             except OSError:
                 return
             for entry in entries:
-                if entry.name.startswith(".") or entry.name in skip:
+                if entry.name.startswith("."):
+                    continue
+                if folder == self.root and entry.name in skip:
                     continue
                 if entry.is_dir():
-                    if entry.name == "templates":
-                        yield entry, str(entry.relative_to(self.root))
+                    if entry.name == TEMPLATES_FOLDER and folder == self.root:
                         continue
                     yield entry, str(entry.relative_to(self.root))
                     yield from walk(entry)
                 elif entry.name.endswith(".html"):
+                    if entry.name.lower() == "index.html":
+                        continue    # a container's own prose, not a child
                     yield entry, str(entry.relative_to(self.root))
 
         yield from walk(self.root)
+
+    def lock_marker(self, document_id: str) -> Path | None:
+        """Where a document's lock marker lives, or None if it has none.
+
+        A container carries the marker **inside** the folder, so a copy of
+        the folder is still locked. A document carries it beside the file
+        and hidden, so the folder around it stays readable.
+        """
+        row = self.db.execute(
+            "SELECT path FROM documents WHERE id = ?", (document_id,)
+        ).fetchone()
+        if row is None or not row[0]:
+            return None
+        path = self.root / str(row[0])
+        if path.is_dir():
+            return path / LOCK_FILE
+        return path.with_name("." + path.name + LOCK_FILE)
+
+    def set_locked(self, document_id: str, locked: bool) -> None:
+        """Lock a document, or unlock it.
+
+        Locking drops the marker file; unlocking takes it away. Nothing
+        else changes: the writing stays exactly as it was, which is the
+        point of a lock on a book that is already published.
+        """
+        marker = self.lock_marker(document_id)
+        if marker is None:
+            return
+        if locked:
+            try:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("Locked.\n", encoding="utf-8")
+            except OSError:
+                pass
+        else:
+            marker.unlink(missing_ok=True)
+
+    def is_locked(self, document_id: str) -> bool:
+        """True when the document is locked — its own marker, or an
+        ancestor's. A locked folder locks everything inside it.
+        """
+        return self.lock_holder(document_id) is not None
+
+    def has_own_lock(self, document_id: str) -> bool:
+        """True when the document carries a lock marker of its own."""
+        marker = self.lock_marker(document_id)
+        return marker is not None and marker.exists()
+
+    def lock_holder(self, document_id: str) -> str | None:
+        """The title of the thing that locks this document, if any.
+
+        A locked folder locks everything inside it, so the holder may be
+        an ancestor rather than the document itself.
+        """
+        current = document_id
+        while current:
+            marker = self.lock_marker(current)
+            if marker is not None and marker.exists():
+                row = self.db.execute(
+                    "SELECT title FROM documents WHERE id = ?", (current,)
+                ).fetchone()
+                return row[0] if row else current
+            current = self.parent_of(current)
+        return None
+
+    def locked_ids(self) -> set[str]:
+        """Every document that is locked — its own marker, or an
+        ancestor's.
+
+        One pass down the tree: a locked folder locks everything inside
+        it, so the answer is inherited as it goes.
+        """
+        documents = self.documents()
+        children: dict[str | None, list[Document]] = {}
+        for document in documents:
+            children.setdefault(document.parent_id, []).append(document)
+        locked: set[str] = set()
+
+        def visit(document: Document, inherited: bool) -> None:
+            here = inherited or self.has_own_lock(document.id)
+            if here:
+                locked.add(document.id)
+            for child in children.get(document.id, []):
+                visit(child, here)
+
+        for root in children.get(None, []):
+            visit(root, False)
+        return locked
 
     def type_of(self, document: Document) -> str:
         """The protected Type role of a document (docs/MODEL.md).

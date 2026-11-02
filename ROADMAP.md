@@ -1595,8 +1595,49 @@ decision changes code today; it says which way the storage build goes
 when it is scheduled, and it is why the queued items are ordered the
 way they are (per-book folders, then read-only books, then the cache).
 
-## Phase 3 — wish-fulfilling fairy software
+### 2.6 The binder is the tree on disk, and a lock is a file in it — DONE (2026-11-02)
 
+**What the writer reported (2026-11-02):** imported documents looked
+empty, folders and documents wore the same icon, and two *Templates*
+folders sat in the binder — one empty at the top, one with the sets at
+the bottom, neither behaving.
+
+**Three causes, three fixes.**
+
+- **The import split one binder into two trees.** A leaf that gained
+  children was promoted from `X.html` to the directory `X/` *after* its
+  new child's path had been worked out, so the child landed in a ghost
+  directory `X.html/` beside the real `X/`. The two halves never met
+  again, and the writer saw a document that read as empty because its
+  words were in the other tree. The child's path is now worked out
+  after the promotion, and `repair_tree.py` puts an older split back
+  together — it finds the ghost directories, moves their contents where
+  they belong, and takes a backup before it touches anything.
+- **The binder was drawn from the database, not from the files.**
+  `Project.binder_tree()` walks the tree on disk and joins the index in
+  for the ids and titles, so a folder the writer made by hand is in the
+  binder at once, and the icon says what the thing *is* on disk rather
+  than what role its row gives it.
+- **Two *Templates* folders.** A template set is a folder of fragments,
+  not a document: the binder holds the writer's own tree and nothing
+  else. The sets are listed in the Outliner instead (View → *Template
+  Sets*), and the project's `templates/` folder — the one reserved name
+  that stays — is no longer a row of its own.
+
+**Also fixed:** a container's own `index.html` is its prose, not a child
+of it. The index no longer grows a second row for that file, so the
+binder stops showing the same words twice, once as the folder and once
+as a document called "index".
+
+**The lock is the same idea made concrete.** A lock is a marker file in
+the tree — `.locked` inside a folder, `.<name>.locked` beside a file —
+so it travels with a copied folder and cannot be lost with the
+database. The tick beside the Type row says whether the marker is there;
+a locked folder locks everything inside it. A locked document still
+opens, still reads, and can still be typed in: it is simply never
+written, and the writer is told rather than losing the words quietly.
+
+## Phase 3 — wish-fulfilling fairy software
 ### 3.1 Text to speech — DONE
 **Request:** "Read the current scene or selection aloud."
 **Implemented (2026-10-20):** one commit (`4fd24b5`). Speak menu:

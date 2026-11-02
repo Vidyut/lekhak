@@ -89,8 +89,30 @@ class TemplateNavigationTests(unittest.TestCase):
     def _of_kind(self, kind):
         return [item for item in self._items() if self._kind_of(item) == kind]
 
-    def _binder_item(self, template_set):
-        return self.window._binder_item_for_template_set(template_set)
+    def _outliner_items(self):
+        result = []
+
+        def collect(item):
+            result.append(item)
+            for index in range(item.childCount()):
+                collect(item.child(index))
+
+        for index in range(self.window.outliner.topLevelItemCount()):
+            collect(self.window.outliner.topLevelItem(index))
+        return result
+
+    def _outliner_of_kind(self, kind):
+        return [item for item in self._outliner_items()
+                if self._kind_of(item) == kind]
+
+    def _select_set(self, template_set):
+        """Open a template set.
+
+        The sets are listed in the Outliner, not in the binder: they are
+        folders of fragments on disk rather than documents, and the
+        binder is the writer's own tree.
+        """
+        self.window._open_template_set(template_set)
 
     def _outliner_rows(self, column=0):
         return [self.window.outliner.topLevelItem(index).text(column)
@@ -105,36 +127,36 @@ class TemplateNavigationTests(unittest.TestCase):
     def _pick(self, item):
         self.window.tree.setCurrentItem(item)
 
-    # --- the binder is the list -------------------------------------------
+    # --- the sets are listed in the Outliner, not the binder ---------------
 
-    def test_every_discovered_set_is_a_row_in_the_binder(self):
+    def test_the_sets_are_not_rows_in_the_binder(self):
+        # The binder is the writer's own tree (docs/STORAGE.md): a
+        # template set is a folder of fragments, not a document, and a
+        # second "Templates" folder in the binder only ever confused the
+        # writer about where the books were.
         names = [item.text(0) for item in self._of_kind(TEMPLATE_SET_KIND)]
+        self.assertEqual(names, [])
+        self.assertEqual([item.text(0) for item in self._of_kind(
+            TEMPLATE_GROUP_KIND)], [])
+
+    def test_every_discovered_set_is_listed_in_the_outliner(self):
+        self.window.show_template_sets()
+        names = [item.text(0) for item in self._outliner_of_kind(
+            TEMPLATE_SET_KIND)]
         self.assertEqual(names, [s.name for s in discover_template_sets(
             self.project.root)])
         self.assertEqual(names, ["default", "short story", "nothing"])
 
-    def test_the_sets_are_children_of_the_templates_area_alone(self):
-        # Flat: every set hangs off the area itself, so a duplicated set
-        # can never read as nested inside the one it came from.
-        for item in self._of_kind(TEMPLATE_SET_KIND):
-            parent = item.parent()
-            self.assertIsNotNone(parent, item.text(0))
-            self.assertEqual(self._kind_of(parent), TEMPLATE_GROUP_KIND)
-
-    def test_the_templates_folder_is_used_as_the_area(self):
-        # The area is the project's templates/ folder, recognised by its
-        # place and not by its name — a writer may have a book of their
-        # own called "Templates", and that folder is theirs.
+    def test_the_templates_folder_is_not_a_row_of_its_own(self):
+        # The area is the project's templates/ folder on disk, not
+        # another thing in the binder.
         create_template_set("Mine", self.project.root)
         self.project.sync_with_disk()
-        area = next((d for d in self.project.documents()
-                     if (d.path or "") == "templates"), None)
-        self.assertIsNotNone(area)
+        self.assertEqual([d for d in self.project.documents()
+                          if (d.path or "") == "templates"], [])
         self.window._reload_tree()
-        item = self._binder_item(discover_template_sets(self.project.root)[0])
-        self.assertIsNotNone(item)
-        self.assertEqual(item.parent().data(0, Qt.UserRole), area.id)
-        self.assertEqual(self._kind_of(item.parent()), TEMPLATE_GROUP_KIND)
+        self.assertEqual([item.text(0) for item in self._of_kind(
+            TEMPLATE_SET_KIND)], [])
 
     def test_a_book_of_the_writers_own_called_templates_is_theirs(self):
         # A folder the writer made, with the same name as the templates
@@ -145,16 +167,15 @@ class TemplateNavigationTests(unittest.TestCase):
         self.assertNotEqual(again.path, "templates")
         self.assertTrue((self.project.root / again.path).is_dir())
 
-    def test_a_project_without_one_gets_a_synthetic_area(self):
-        # No scaffolding is created in the database: the area is a view
+    def test_a_project_without_a_templates_folder_gets_no_area(self):
+        # No scaffolding is created in the database: the sets are a view
         # of the folders on disk, not another store.
-        area = next(item for item in self._of_kind(TEMPLATE_GROUP_KIND))
-        self.assertIsNone(area.data(0, Qt.UserRole))
         self.assertEqual([d for d in self.project.documents()
                           if (d.path or "") == "templates"], [])
 
-    def test_the_area_carries_no_document_id(self):
-        for item in self._of_kind(TEMPLATE_SET_KIND):
+    def test_the_listed_sets_carry_no_document_id(self):
+        self.window.show_template_sets()
+        for item in self._outliner_of_kind(TEMPLATE_SET_KIND):
             self.assertIsNone(item.data(0, Qt.UserRole))
             self.assertIsInstance(item.data(0, TEMPLATE_SET_ROLE), object)
 
@@ -163,7 +184,7 @@ class TemplateNavigationTests(unittest.TestCase):
     def test_selecting_a_set_lists_its_files_and_folders_in_the_outliner(self):
         created = create_template_set("Mine", self.project.root)
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
 
         self.assertEqual(self.window.current_template_set.name, "Mine")
         self.assertIsNone(self.window.current_id)
@@ -183,7 +204,7 @@ class TemplateNavigationTests(unittest.TestCase):
                 else TEMPLATE_FOLDER_KIND)
 
     def test_a_shipped_set_lists_the_files_it_ships_with(self):
-        self._pick(self._binder_item(discover_template_sets(
+        self._select_set((discover_template_sets(
             self.project.root)[0]))
         rows = self._outliner_rows()
         self.assertIn("folder.html", rows)
@@ -199,7 +220,7 @@ class TemplateNavigationTests(unittest.TestCase):
         (created.directory / "epub" / "folder.html").write_text(
             "<p>${Content}</p>", encoding="utf-8")
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
 
         folder = self._outliner_item("epub")
         self.assertEqual(self._kind_of(folder), TEMPLATE_FOLDER_KIND)
@@ -215,7 +236,7 @@ class TemplateNavigationTests(unittest.TestCase):
         (created.directory / "document.html").write_text(
             "<p>mine ${Content}</p>", encoding="utf-8")
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
 
         self.window._outliner_clicked(self._outliner_item("document.html"), 0)
 
@@ -235,7 +256,7 @@ class TemplateNavigationTests(unittest.TestCase):
         (created.directory / "notes.txt").write_text(
             "plain ${Title}", encoding="utf-8")
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
 
         self.window._outliner_clicked(self._outliner_item("notes.txt"), 0)
 
@@ -250,7 +271,7 @@ class TemplateNavigationTests(unittest.TestCase):
         created = create_template_set("Mine", self.project.root)
         (created.directory / "README.md").write_text("mine", encoding="utf-8")
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
 
         self.window._outliner_clicked(self._outliner_item("README.md"), 0)
 
@@ -261,7 +282,7 @@ class TemplateNavigationTests(unittest.TestCase):
     def test_a_shipped_sets_file_offers_duplicate_instead(self):
         # A set that ships in code has no folder to write to.
         source = discover_template_sets(self.project.root)[0]
-        self._pick(self._binder_item(source))
+        self._select_set((source))
 
         self.window._outliner_clicked(self._outliner_item("folder.html"), 0)
 
@@ -272,7 +293,7 @@ class TemplateNavigationTests(unittest.TestCase):
     def test_clicking_a_folder_never_changes_the_selection(self):
         created = create_template_set("Mine", self.project.root)
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
 
         self.window._outliner_clicked(self._outliner_item("documents"), 0)
         self.assertEqual(self.window.current_template_set.name, "Mine")
@@ -284,7 +305,7 @@ class TemplateNavigationTests(unittest.TestCase):
         path = created.directory / "document.html"
         path.write_text("<p>mine ${Content}</p>", encoding="utf-8")
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
         self.window._outliner_clicked(self._outliner_item("document.html"), 0)
 
         cursor = self.window.editor.textCursor()
@@ -299,7 +320,7 @@ class TemplateNavigationTests(unittest.TestCase):
         path = created.directory / "document.html"
         path.write_text("<p>mine ${Content}</p>", encoding="utf-8")
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
         self.window._outliner_clicked(self._outliner_item("document.html"), 0)
         cursor = self.window.editor.textCursor()
         cursor.movePosition(QTextCursor.Start)
@@ -316,7 +337,7 @@ class TemplateNavigationTests(unittest.TestCase):
         first = created.directory / "document.html"
         first.write_text("<p>one ${Content}</p>", encoding="utf-8")
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
         self.window._outliner_clicked(self._outliner_item("document.html"), 0)
         cursor = self.window.editor.textCursor()
         cursor.movePosition(QTextCursor.Start)
@@ -336,7 +357,7 @@ class TemplateNavigationTests(unittest.TestCase):
         created = create_template_set("Mine", self.project.root)
         (created.directory / name).write_text(relative, encoding="utf-8")
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
         self.window._outliner_clicked(self._outliner_item(name), 0)
         return created, created.directory / name
 
@@ -666,10 +687,10 @@ class TemplateNavigationTests(unittest.TestCase):
         self.assertEqual(path.read_text(encoding="utf-8"),
                          "# head\nPage size: 7,10\n<p>${Content}</p>")
 
-    # --- selecting the area ------------------------------------------------
+    # --- listing the sets ---------------------------------------------------
 
-    def test_selecting_the_area_lists_the_sets(self):
-        self._pick(next(item for item in self._of_kind(TEMPLATE_GROUP_KIND)))
+    def test_listing_the_sets_lists_them(self):
+        self.window.show_template_sets()
 
         self.assertTrue(self.window.current_template_group)
         self.assertIsNone(self.window.current_template_set)
@@ -677,7 +698,7 @@ class TemplateNavigationTests(unittest.TestCase):
         self.assertIn("short story", self._outliner_rows())
 
     def test_clicking_a_listed_set_opens_it(self):
-        self._pick(next(item for item in self._of_kind(TEMPLATE_GROUP_KIND)))
+        self.window.show_template_sets()
         self.window._outliner_clicked(self._outliner_item("default"), 0)
         self.assertEqual(self.window.current_template_set.name, "default")
 
@@ -686,7 +707,7 @@ class TemplateNavigationTests(unittest.TestCase):
     def test_picking_a_document_leaves_the_template_state_behind(self):
         created = create_template_set("Mine", self.project.root)
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
         self.assertEqual(self.window.current_template_set.name, "Mine")
 
         self.window._select_document(self.draft.id)
@@ -697,19 +718,32 @@ class TemplateNavigationTests(unittest.TestCase):
                         in (self.window.editor_page, self.window.corkboard,
                             self.window.outliner))
 
+    def test_a_document_can_be_picked_again_after_the_sets_were_listed(self):
+        # The editor was emptied to list the sets, so the binder must not
+        # still hold the document highlighted: the writer would click it
+        # again and nothing would happen.
+        self.window._select_document(self.draft.id)
+        self.window.show_template_sets()
+        self.assertIsNone(self.window.current_id)
+
+        self.window._select_document(self.draft.id)
+
+        self.assertEqual(self.window.current_id, self.draft.id)
+        self.assertFalse(self.window.current_template_group)
+
     def test_a_folder_never_lands_on_a_template_view(self):
         # Selecting a template first, then a folder: the folder view, not
         # anything a template selection left behind.
         created = create_template_set("Mine", self.project.root)
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
         self.window._select_document(self.draft.id)
         self.assertIn(self.window.views.currentWidget(),
                       (self.window.corkboard, self.window.outliner))
 
     # --- duplication is flat ------------------------------------------------
 
-    def test_a_duplicate_is_a_sibling_on_disk_and_in_the_binder(self):
+    def test_a_duplicate_is_a_sibling_on_disk_and_in_the_listing(self):
         source = discover_template_sets(self.project.root)[0]
         created = copy_template_set(source, "default copy",
                                     self.project.root)
@@ -718,27 +752,27 @@ class TemplateNavigationTests(unittest.TestCase):
                          self.project.root / "templates")
         self.assertFalse((self.project.root / "templates" / "default").exists())
 
-        self.window._reload_tree()
-        item = self._binder_item(created)
-        self.assertIsNotNone(item)
-        self.assertEqual(self._kind_of(item.parent()), TEMPLATE_GROUP_KIND)
-        self.assertNotEqual(item.parent().text(0), "default")
+        self.window.show_template_sets()
+        names = [item.text(0) for item in self._outliner_of_kind(
+            TEMPLATE_SET_KIND)]
+        self.assertIn("default copy", names)
 
     def test_a_duplicate_is_listed_again_without_reloading_by_hand(self):
         source = discover_template_sets(self.project.root)[0]
         self.window._duplicate_template(source, "Second copy")
-        self.assertIn("Second copy", [item.text(0)
-                                      for item in self._of_kind(
-                                          TEMPLATE_SET_KIND)])
         self.assertEqual(self.window.current_template_set.name,
                          "Second copy")
+        self.window.show_template_sets()
+        self.assertIn("Second copy", [item.text(0)
+                                      for item in self._outliner_of_kind(
+                                          TEMPLATE_SET_KIND)])
 
     # --- one file out, its own set ------------------------------------------
 
     def test_a_file_row_carries_the_path_it_will_be_copied_from(self):
         created = create_template_set("Mine", self.project.root)
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
         row = self._outliner_item("folder.html")
         self.assertEqual(row.data(0, TEMPLATE_PATH_ROLE), "folder.html")
 
@@ -747,25 +781,26 @@ class TemplateNavigationTests(unittest.TestCase):
         (created.directory / "folder.html").write_text(
             "<p>mine ${Content}</p>", encoding="utf-8")
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
 
         self.window._copy_template_file("folder.html", "Chapter only")
 
-        names = [item.text(0) for item in self._of_kind(TEMPLATE_SET_KIND)]
+        # That one file and nothing else, and the writer lands in it.
+        self.assertEqual(self.window.current_template_set.name,
+                         "Chapter only")
+        self.window.show_template_sets()
+        names = [item.text(0) for item in self._outliner_of_kind(
+            TEMPLATE_SET_KIND)]
         self.assertIn("Chapter only", names)
         # Flat: a sibling of the set it came from, never its child —
         # "It should appear in the Templates folder. Not Templates >
         # Default."
-        copy_item = next(item for item in self._of_kind(TEMPLATE_SET_KIND)
-                         if item.text(0) == "Chapter only")
-        self.assertEqual(self._kind_of(copy_item.parent()),
-                         TEMPLATE_GROUP_KIND)
-        # That one file and nothing else, and the writer lands in it.
+        copy_item = next(item for item in self._outliner_of_kind(
+            TEMPLATE_SET_KIND) if item.text(0) == "Chapter only")
+        self.assertIsNone(copy_item.parent())
         copy_dir = self.project.root / "templates" / "Chapter only"
         self.assertEqual(sorted(path.name for path in copy_dir.iterdir()),
                          ["folder.html"])
-        self.assertEqual(self.window.current_template_set.name,
-                         "Chapter only")
         self.assertIn("mine ${Content}",
                       (copy_dir / "folder.html").read_text(encoding="utf-8"))
 
@@ -773,7 +808,7 @@ class TemplateNavigationTests(unittest.TestCase):
         # A set with no folder still has files the listing shows; the
         # copy writes out exactly those bytes (§1.1).
         source = discover_template_sets(self.project.root)[0]
-        self._pick(self._binder_item(source))
+        self._select_set((source))
         self.window._copy_template_file("folder.html", "My chapter")
 
         copy_dir = self.project.root / "templates" / "My chapter"
@@ -786,16 +821,17 @@ class TemplateNavigationTests(unittest.TestCase):
     # --- template rows never reach an export --------------------------------
 
     def test_a_selected_template_is_not_an_export_scope(self):
-        item = self._binder_item(discover_template_sets(self.project.root)[0])
+        self.window.show_template_sets()
         self.window.tree.clearSelection()
         self.window.outliner.clearSelection()
+        item = self._outliner_item("default")
         item.setSelected(True)
         self.assertIsNone(self.window._gather_export_selection())
 
     def test_template_files_never_carry_a_document_id(self):
         created = create_template_set("Mine", self.project.root)
         self.window._reload_tree()
-        self._pick(self._binder_item(created))
+        self._select_set((created))
         for index in range(self.window.outliner.topLevelItemCount()):
             self.assertIsNone(
                 self.window.outliner.topLevelItem(index).data(0, Qt.UserRole))
